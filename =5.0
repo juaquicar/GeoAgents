@@ -1,0 +1,4 @@
+Requirement already satisfied: Django in ./.venv/lib/python3.12/site-packages (6.0.3)
+Requirement already satisfied: djangorestframework in ./.venv/lib/python3.12/site-packages (3.16.1)
+Requirement already satisfied: asgiref>=3.9.1 in ./.venv/lib/python3.12/site-packages (from Django) (3.11.1)
+Requirement already satisfied: sqlparse>=0.5.0 in ./.venv/lib/python3.12/site-packages (from Django) (0.5.5)
