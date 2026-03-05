@@ -37,9 +37,12 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.gis',
     'rest_framework',
     'rest_framework.authtoken',
     'agents_core',
+    'agents_tools.apps.AgentsToolsConfig',
+    'agents_gis.apps.AgentsGisConfig',
 ]
 
 MIDDLEWARE = [
@@ -76,9 +79,13 @@ WSGI_APPLICATION = 'geoagents.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+    "default": {
+        "ENGINE": "django.contrib.gis.db.backends.postgis",
+        "NAME": "geoagents",
+        "USER": "geoagents",
+        "PASSWORD": "geoagents",
+        "HOST": "127.0.0.1",
+        "PORT": "5433",
     }
 }
 
@@ -130,3 +137,15 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
 }
+
+
+
+AGENTS_GIS_LAYERS = [
+    {
+        "name": "demo_points",
+        "table": "demo_points",
+        "geom_col": "the_geom",
+        "id_col": "id",
+        "fields": ["name"],
+    },
+]

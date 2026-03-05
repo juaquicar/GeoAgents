@@ -13,6 +13,8 @@ class Agent(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+    tool_allowlist = models.JSONField(default=list, blank=True)  # ["utils.ping","utils.now"]
+
     def __str__(self):
         return self.name
 
