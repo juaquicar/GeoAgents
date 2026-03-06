@@ -1,4 +1,5 @@
 from django.utils import timezone
+from django.conf import settings
 
 from .models import Run
 from .steps import log_step
@@ -7,11 +8,34 @@ from agents_tools.executor import invoke_tool
 from agents_llm.planner import plan_run
 from agents_llm.synthesizer import synthesize_run
 
+MAX_PLANNER_TOOL_STEPS = getattr(settings, "AGENTS_MAX_PLANNER_TOOL_STEPS", 5)
 
 def _ensure_tool_allowed(run: Run, tool_name: str) -> None:
     allowlist = set(getattr(run.agent, "tool_allowlist", []) or [])
     if allowlist and tool_name not in allowlist:
         raise PermissionError(f"tool not allowed: {tool_name}")
+
+def _enrich_tool_args_from_payload(tool_name: str, args: dict, payload: dict) -> dict:
+    args = dict(args or {})
+    map_context = payload.get("map_context") or {}
+
+    # bbox automático para tools GIS que la necesitan
+    if tool_name in {
+        "spatial.summary",
+        "spatial.context_pack",
+        "spatial.query_layer",
+        "spatial.intersects",
+    }:
+        if "bbox" not in args and map_context.get("bbox"):
+            args["bbox"] = map_context["bbox"]
+
+    # zoom automático si existe
+    if tool_name in {"spatial.summary", "spatial.context_pack"}:
+        if "zoom" not in args and map_context.get("zoom") is not None:
+            args["zoom"] = map_context["zoom"]
+
+    return args
+
 
 
 def execute_run(run: Run) -> Run:
@@ -66,10 +90,11 @@ def execute_run(run: Run) -> Run:
             )
 
             run.output_json = result
+            run.final_text = ""
             run.status = "succeeded" if tool_res.ok else "failed"
             run.error = "" if tool_res.ok else (tool_res.error or "tool failed")
             run.ended_at = timezone.now()
-            run.save(update_fields=["output_json", "status", "error", "ended_at"])
+            run.save(update_fields=["output_json", "final_text", "status", "error", "ended_at"])
 
             log_step(
                 run,
@@ -96,14 +121,26 @@ def execute_run(run: Run) -> Run:
             )
 
             steps = plan.get("steps", [])
+
+            tool_steps = [s for s in steps if s.get("type") == "tool"]
+            if len(tool_steps) > MAX_PLANNER_TOOL_STEPS:
+                raise ValueError(
+                    f"Planner produced too many tool steps: {len(tool_steps)} > {MAX_PLANNER_TOOL_STEPS}"
+                )
+
             executed_outputs = []
 
             for step in steps:
                 step_type = step.get("type")
 
                 if step_type == "tool":
+                    required = bool(step.get("required", True))
                     tool_name = (step.get("name") or "").strip()
-                    args = step.get("args") or {}
+                    args = _enrich_tool_args_from_payload(
+                        tool_name=tool_name,
+                        args=step.get("args") or {},
+                        payload=payload,
+                    )
 
                     if not tool_name:
                         raise ValueError("Planner produced a tool step without name")
@@ -121,11 +158,15 @@ def execute_run(run: Run) -> Run:
                         {
                             "type": "tool",
                             "name": tool_name,
+                            "required": required,
                             "ok": tool_res.ok,
                             "data": tool_res.data,
                             "error": tool_res.error,
                         }
                     )
+
+                    if required and not tool_res.ok:
+                        raise ValueError(f"Required tool step failed: {tool_name} -> {tool_res.error}")
 
                 elif step_type == "final":
                     break
@@ -164,10 +205,11 @@ def execute_run(run: Run) -> Run:
             )
 
             run.output_json = result
+            run.final_text = final_text
             run.status = "succeeded"
             run.error = ""
             run.ended_at = timezone.now()
-            run.save(update_fields=["output_json", "status", "error", "ended_at"])
+            run.save(update_fields=["output_json", "final_text", "status", "error", "ended_at"])
 
             log_step(
                 run,

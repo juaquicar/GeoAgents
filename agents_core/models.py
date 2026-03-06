@@ -50,6 +50,8 @@ class Run(models.Model):
 
     step_seq = models.PositiveIntegerField(default=0)
 
+    final_text = models.TextField(blank=True, default="")
+
     def __str__(self):
         return f"Run#{self.pk} agent={self.agent.pk} status={self.status}"
 

@@ -11,6 +11,13 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+from dotenv import load_dotenv
+import os
+
+
+load_dotenv(".env")
+load_dotenv(".env.local", override=True)
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -161,6 +168,13 @@ AGENTS_GIS_LAYERS = [
 ]
 
 
-# PASAR A VARIABLES DE ENTORNO
-OPENAI_API_KEY = ""
-AGENTS_DEFAULT_LLM_MODEL = "gpt-4o-mini"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+AGENTS_DEFAULT_LLM_MODEL = os.getenv(
+    "AGENTS_DEFAULT_LLM_MODEL",
+    "gpt-4o-mini"
+)
+AGENTS_MAX_PLANNER_TOOL_STEPS = int(
+    os.getenv("AGENTS_MAX_PLANNER_TOOL_STEPS", "5")
+)
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY not configured")

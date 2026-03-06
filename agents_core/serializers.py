@@ -19,12 +19,13 @@ class RunSerializer(serializers.ModelSerializer):
             "status",
             "input_json",
             "output_json",
+            "final_text",
             "error",
             "created_at",
             "started_at",
             "ended_at",
         ]
-        read_only_fields = ["id", "user", "status", "output_json", "error", "created_at", "started_at", "ended_at"]
+        read_only_fields = ["id", "user", "status", "output_json", "final_text", "error", "created_at", "started_at", "ended_at"]
 
 
 class RunStepSerializer(serializers.ModelSerializer):

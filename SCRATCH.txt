@@ -120,3 +120,25 @@ curl -X PATCH http://127.0.0.1:8000/api/agents/$AGENT_ID/ \
       }
     }
   }"
+
+
+
+# REALIZAR UNA EJECUCION O ANALISIS
+curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"Analiza espacialmente esta zona y resume los elementos detectados\",
+      \"map_context\": {
+        \"bbox\": {\"west\": -6.06, \"south\": 37.32, \"east\": -6.05, \"north\": 37.33},
+        \"zoom\": 18
+      }
+    }
+  }"
+  curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/execute/ \
+  -H "Authorization: Token $TOKEN"
+
+  curl http://127.0.0.1:8000/api/runs/$RUN_ID/steps/ \
+  -H "Authorization: Token $TOKEN"
