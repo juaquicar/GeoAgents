@@ -181,10 +181,13 @@ def plan_run(run, payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     validated_result = validate_plan(raw_result)
+    gis_layers_catalog = export_gis_layers_catalog()
+
     normalized_result = normalize_plan(
         validated_result,
         payload=payload,
         agent_profile=getattr(run.agent, "profile", "compact"),
+        gis_layers_catalog=gis_layers_catalog,
     )
 
     allowed = set(getattr(run.agent, "tool_allowlist", []) or [])

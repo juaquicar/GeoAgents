@@ -18,7 +18,7 @@ from agents_core.models import Agent, Run  # noqa: E402
 from agents_core.runner import execute_run  # noqa: E402
 
 
-TEST_GOAL = "Analiza esta zona y comprueba si los puntos están dentro de las zonas, explicando además el contexto espacial general"
+TEST_GOAL = "Comprueba la relación espacial entre los puntos y las zonas en esta área"
 TEST_MAP_CONTEXT = {
     "bbox": {
         "west": -6.06,

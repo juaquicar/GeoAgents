@@ -1,10 +1,15 @@
 from copy import deepcopy
 
+from agents_gis.inference import (
+    infer_intersection_layers,
+    infer_nearby_layer,
+)
 
 def normalize_plan(
     plan: dict,
     payload: dict | None = None,
     agent_profile: str = "compact",
+    gis_layers_catalog: list | None = None,
 ) -> dict:
     """
     Devuelve una versión saneada del plan del planner.
@@ -14,6 +19,7 @@ def normalize_plan(
     goal = (payload.get("goal") or "").lower()
     map_context = payload.get("map_context") or {}
     profile = agent_profile or "compact"
+    gis_layers_catalog = gis_layers_catalog or []
 
     plan = deepcopy(plan)
     steps = plan.get("steps", [])
@@ -52,6 +58,7 @@ def normalize_plan(
         goal,
         map_context,
         profile=profile,
+        gis_layers_catalog=gis_layers_catalog,
     )
 
     # 5) eliminar redundancias lógicas
@@ -181,6 +188,7 @@ def _apply_gis_goal_rules(
     goal: str,
     map_context: dict,
     profile: str = "compact",
+    gis_layers_catalog: list | None = None,
 ) -> list:
     """
     Reescribe el plan con heurísticas GIS simples.
@@ -193,6 +201,7 @@ def _apply_gis_goal_rules(
     4) resumen general
     """
     goal = (goal or "").lower()
+    gis_layers_catalog = gis_layers_catalog or []
 
     tool_steps = [s for s in steps if s.get("type") == "tool"]
 
@@ -245,18 +254,28 @@ def _apply_gis_goal_rules(
             return steps
 
         # Si no hay intersects válido, NO fabricamos uno required=True sin capas.
+        inferred_layers = infer_intersection_layers(goal, gis_layers_catalog)
+        source_layer = inferred_layers.get("source_layer")
+        target_layer = inferred_layers.get("target_layer")
+
         intersects_step = {
             "type": "tool",
             "name": "spatial.intersects",
             "args": {
+                "source_layer": source_layer,
+                "target_layer": target_layer,
                 "bbox": bbox,
                 "limit": 20,
             },
-            "required": False,
+            "required": bool(source_layer and target_layer and _is_compact(profile)),
         }
 
         if _is_compact(profile):
-            # En compact, si no podemos construir intersects completo, mejor no sustituir el plan.
+            # Si tenemos capas inferidas, sí podemos construirlo.
+            if source_layer and target_layer:
+                return [intersects_step, {"type": "final"}]
+
+            # Si no podemos inferirlo bien, no sustituimos el plan.
             return steps
 
         steps = _insert_before_final(steps, intersects_step)
@@ -311,15 +330,18 @@ def _apply_gis_goal_rules(
                 )
             return steps
 
+        inferred_nearby_layer = infer_nearby_layer(goal, gis_layers_catalog)
+
         nearby_step = {
             "type": "tool",
             "name": "spatial.nearby",
             "args": {
+                "layer": inferred_nearby_layer,
                 "point": _bbox_center(bbox) if bbox else {"lon": 0.0, "lat": 0.0},
                 "radius_m": 250,
                 "limit": 10,
             },
-            "required": True if _is_compact(profile) else False,
+            "required": True if (_is_compact(profile) and inferred_nearby_layer) else False,
         }
 
         if _is_compact(profile):
