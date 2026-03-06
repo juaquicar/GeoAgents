@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'agents_core',
     'agents_tools.apps.AgentsToolsConfig',
     'agents_gis.apps.AgentsGisConfig',
+    'agents_llm',
 ]
 
 MIDDLEWARE = [
@@ -158,3 +159,8 @@ AGENTS_GIS_LAYERS = [
         "filter_fields": ["name"],
     },
 ]
+
+
+# PASAR A VARIABLES DE ENTORNO
+OPENAI_API_KEY = "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"
+AGENTS_DEFAULT_LLM_MODEL = "gpt-4o-mini"

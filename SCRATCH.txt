@@ -47,12 +47,10 @@ curl -X POST http://127.0.0.1:8000/api/agents/ \
     }
   }"
 
-# EJECUTAR
+# EJECUTAR Y STEPS
 curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/execute/ \
   -H "Authorization: Token $TOKEN"
 
-
-  # STEPS
   curl http://127.0.0.1:8000/api/runs/$RUN_ID/steps/ \
   -H "Authorization: Token $TOKEN"
 

@@ -4,10 +4,17 @@ from .models import Run
 from .steps import log_step
 
 from agents_tools.executor import invoke_tool
+from agents_llm.planner import plan_run
+from agents_llm.synthesizer import synthesize_run
+
+
+def _ensure_tool_allowed(run: Run, tool_name: str) -> None:
+    allowlist = set(getattr(run.agent, "tool_allowlist", []) or [])
+    if allowlist and tool_name not in allowlist:
+        raise PermissionError(f"tool not allowed: {tool_name}")
 
 
 def execute_run(run: Run) -> Run:
-    # --- start ---
     run.status = "running"
     run.started_at = timezone.now()
     run.save(update_fields=["status", "started_at"])
@@ -23,11 +30,9 @@ def execute_run(run: Run) -> Run:
     try:
         payload = run.input_json or {}
 
-        # ============================================================
-        # 10.7 Tool-call path (MVP)
-        # Si el input trae {"tool_call": {"name": "...", "args": {...}}}
-        # ejecutamos la tool y devolvemos su salida como resultado.
-        # ============================================================
+        # ------------------------------------------------------------
+        # MODO 1: tool_call directo
+        # ------------------------------------------------------------
         tool_call = payload.get("tool_call")
         if tool_call:
             tool_name = (tool_call.get("name") or "").strip()
@@ -36,12 +41,8 @@ def execute_run(run: Run) -> Run:
             if not tool_name:
                 raise ValueError("tool_call.name is required")
 
-            # Allowlist (si existe el campo en Agent)
-            allowlist = set(getattr(run.agent, "tool_allowlist", []) or [])
-            if allowlist and tool_name not in allowlist:
-                raise PermissionError(f"tool not allowed: {tool_name}")
+            _ensure_tool_allowed(run, tool_name)
 
-            # Ejecutar tool (esto ya crea RunStep(kind='tool') con latency y output)
             tool_res, _latency_ms = invoke_tool(
                 run=run,
                 tool_name=tool_name,
@@ -49,7 +50,6 @@ def execute_run(run: Run) -> Run:
                 user=run.user,
             )
 
-            # Resultado final del run basado en la tool
             result = {
                 "ok": tool_res.ok,
                 "tool": tool_name,
@@ -80,38 +80,122 @@ def execute_run(run: Run) -> Run:
             )
             return run
 
-        # ============================================================
-        # Fallback: comportamiento previo (mock plan + mock result)
-        # ============================================================
+        # ------------------------------------------------------------
+        # MODO 2: planner LLM
+        # ------------------------------------------------------------
+        goal = (payload.get("goal") or "").strip()
+        if goal:
+            plan = plan_run(run, payload)
 
-        # Step: "plan" (de momento mock)
-        plan = {
-            "type": "single_step",
-            "next": "result",
-        }
-        log_step(
-            run,
-            kind="plan",
-            name="mock.plan",
-            input_json={"input": payload},
-            output_json=plan,
-        )
+            log_step(
+                run,
+                kind="llm",
+                name="llm.plan",
+                input_json={"goal": goal},
+                output_json=plan,
+            )
 
-        # Step: "result" (mock)
-        result = {
+            steps = plan.get("steps", [])
+            executed_outputs = []
+
+            for step in steps:
+                step_type = step.get("type")
+
+                if step_type == "tool":
+                    tool_name = (step.get("name") or "").strip()
+                    args = step.get("args") or {}
+
+                    if not tool_name:
+                        raise ValueError("Planner produced a tool step without name")
+
+                    _ensure_tool_allowed(run, tool_name)
+
+                    tool_res, _latency_ms = invoke_tool(
+                        run=run,
+                        tool_name=tool_name,
+                        args=args,
+                        user=run.user,
+                    )
+
+                    executed_outputs.append(
+                        {
+                            "type": "tool",
+                            "name": tool_name,
+                            "ok": tool_res.ok,
+                            "data": tool_res.data,
+                            "error": tool_res.error,
+                        }
+                    )
+
+                elif step_type == "final":
+                    break
+
+                else:
+                    raise ValueError(f"Unknown planner step type: {step_type}")
+
+            final_text = synthesize_run(
+                goal=goal,
+                agent_name=run.agent.name,
+                step_outputs=executed_outputs,
+            )
+
+            log_step(
+                run,
+                kind="llm",
+                name="llm.synthesize",
+                input_json={"goal": goal, "step_outputs": executed_outputs},
+                output_json={"final_text": final_text},
+            )
+
+            result = {
+                "ok": True,
+                "goal": goal,
+                "plan": plan,
+                "executed_outputs": executed_outputs,
+                "final_text": final_text,
+            }
+
+            log_step(
+                run,
+                kind="result",
+                name="planner.result",
+                input_json={"goal": goal},
+                output_json=result,
+            )
+
+            run.output_json = result
+            run.status = "succeeded"
+            run.error = ""
+            run.ended_at = timezone.now()
+            run.save(update_fields=["output_json", "status", "error", "ended_at"])
+
+            log_step(
+                run,
+                kind="system",
+                name="run.end",
+                input_json={},
+                output_json={"status": "succeeded"},
+            )
+            return run
+
+        # ------------------------------------------------------------
+        # Fallback
+        # ------------------------------------------------------------
+        fallback = {
             "ok": True,
             "echo": payload,
             "agent_name": run.agent.name,
         }
+
         log_step(
             run,
             kind="result",
             name="mock.result",
-            input_json={"plan": plan},
-            output_json=result,
+            input_json={},
+            output_json=fallback,
         )
 
-        run.output_json = result
+        run.output_json = fallback
         run.status = "succeeded"
         run.error = ""
         run.ended_at = timezone.now()
