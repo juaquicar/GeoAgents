@@ -235,25 +235,22 @@ def _apply_gis_goal_rules(
                     )
                 return _keep_only_tools(steps, {"spatial.intersects"})
 
-            # investigate
-            if _goal_requests_general_context(goal):
-                if not has_context_pack and bbox:
-                    steps = _insert_before_final(
-                        steps,
-                        {
-                            "type": "tool",
-                            "name": "spatial.context_pack",
-                            "args": {
-                                "bbox": bbox,
-                                "zoom": zoom,
-                                "profile": "rich",
-                            },
-                            "required": False,
+            if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+                steps = _insert_before_final(
+                    steps,
+                    {
+                        "type": "tool",
+                        "name": "spatial.context_pack",
+                        "args": {
+                            "bbox": bbox,
+                            "zoom": zoom,
+                            "profile": "rich",
                         },
-                    )
+                        "required": False,
+                    },
+                )
             return steps
 
-        # Si no hay intersects válido, NO fabricamos uno required=True sin capas.
         inferred_layers = infer_intersection_layers(goal, gis_layers_catalog)
         source_layer = inferred_layers.get("source_layer")
         target_layer = inferred_layers.get("target_layer")
@@ -271,11 +268,8 @@ def _apply_gis_goal_rules(
         }
 
         if _is_compact(profile):
-            # Si tenemos capas inferidas, sí podemos construirlo.
             if source_layer and target_layer:
                 return [intersects_step, {"type": "final"}]
-
-            # Si no podemos inferirlo bien, no sustituimos el plan.
             return steps
 
         steps = _insert_before_final(steps, intersects_step)
@@ -341,11 +335,13 @@ def _apply_gis_goal_rules(
                 "radius_m": 250,
                 "limit": 10,
             },
-            "required": True if (_is_compact(profile) and inferred_nearby_layer) else False,
+            "required": bool(inferred_nearby_layer and _is_compact(profile)),
         }
 
         if _is_compact(profile):
-            return [nearby_step, {"type": "final"}]
+            if inferred_nearby_layer:
+                return [nearby_step, {"type": "final"}]
+            return steps
 
         steps = _insert_before_final(steps, nearby_step)
 

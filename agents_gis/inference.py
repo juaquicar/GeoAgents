@@ -17,6 +17,7 @@ LINE_HINTS = [
 ]
 
 
+
 def _text_blob(layer: Dict[str, Any]) -> str:
     parts = [
         str(layer.get("name", "")),
@@ -86,7 +87,8 @@ def infer_nearby_layer(
     """
     goal = (goal or "").lower()
 
-    # Regla futura: si el goal menciona algo concreto, refinar aquí.
+    # Futuro: si el goal menciona explícitamente una capa o tipo,
+    # se puede refinar aquí.
     best_point = find_best_point_layer(gis_layers_catalog)
     if best_point:
         return best_point
@@ -112,7 +114,6 @@ def infer_intersection_layers(
     source_layer = find_best_point_layer(gis_layers_catalog)
     target_layer = find_best_polygon_layer(gis_layers_catalog)
 
-    # Evitar elegir la misma si solo hay una capa rara
     if source_layer and target_layer and source_layer == target_layer:
         target_layer = None
 

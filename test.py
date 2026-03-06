@@ -10,7 +10,7 @@ import django
 # -----------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.append(str(BASE_DIR))
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "geoagents.settings")  # ajusta si tu proyecto tiene otro nombre
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "geoagents.settings")  # ajusta si cambia
 django.setup()
 
 from django.contrib.auth import get_user_model  # noqa: E402
@@ -18,16 +18,62 @@ from agents_core.models import Agent, Run  # noqa: E402
 from agents_core.runner import execute_run  # noqa: E402
 
 
-TEST_GOAL = "Comprueba la relación espacial entre los puntos y las zonas en esta área"
-TEST_MAP_CONTEXT = {
-    "bbox": {
-        "west": -6.06,
-        "south": 37.32,
-        "east": -6.05,
-        "north": 37.33,
+TEST_CASES = [
+    {
+        "name": "intersects_simple",
+        "goal": "Comprueba la relación espacial entre los puntos y las zonas en esta área",
+        "map_context": {
+            "bbox": {
+                "west": -6.06,
+                "south": 37.32,
+                "east": -6.05,
+                "north": 37.33,
+            },
+            "zoom": 18,
+        },
     },
-    "zoom": 18,
-}
+    {
+        "name": "nearby_simple",
+        "goal": "¿Qué elementos hay cerca del centro del mapa?",
+        "map_context": {
+            "bbox": {
+                "west": -6.06,
+                "south": 37.32,
+                "east": -6.05,
+                "north": 37.33,
+            },
+            "zoom": 18,
+        },
+    },
+    {
+        "name": "summary_simple",
+        "goal": "Analiza espacialmente esta zona y resume los elementos detectados",
+        "map_context": {
+            "bbox": {
+                "west": -6.06,
+                "south": 37.32,
+                "east": -6.05,
+                "north": 37.33,
+            },
+            "zoom": 18,
+        },
+    },
+    {
+        "name": "mixed_context_intersects",
+        "goal": "Analiza esta zona y comprueba si los puntos están dentro de las zonas, explicando además el contexto espacial general",
+        "map_context": {
+            "bbox": {
+                "west": -6.06,
+                "south": 37.32,
+                "east": -6.05,
+                "north": 37.33,
+            },
+            "zoom": 18,
+        },
+    },
+]
+
+PROFILES = ["compact", "rich", "investigate"]
 
 TOOL_ALLOWLIST = [
     "spatial.summary",
@@ -58,7 +104,6 @@ def get_or_create_agent(profile: str) -> Agent:
         },
     )
 
-    # Reconciliar por si ya existía
     changed = False
     if agent.profile != profile:
         agent.profile = profile
@@ -69,13 +114,14 @@ def get_or_create_agent(profile: str) -> Agent:
     if not agent.is_active:
         agent.is_active = True
         changed = True
+
     if changed:
         agent.save()
 
     return agent
 
 
-def run_case(profile: str, goal: str, map_context: dict) -> dict:
+def run_case(profile: str, case: dict) -> dict:
     user = get_or_create_user()
     agent = get_or_create_agent(profile)
 
@@ -83,8 +129,8 @@ def run_case(profile: str, goal: str, map_context: dict) -> dict:
         agent=agent,
         user=user,
         input_json={
-            "goal": goal,
-            "map_context": map_context,
+            "goal": case["goal"],
+            "map_context": case["map_context"],
         },
         status="queued",
     )
@@ -97,6 +143,7 @@ def run_case(profile: str, goal: str, map_context: dict) -> dict:
     meta = plan.get("_meta", {}) or {}
 
     return {
+        "case_name": case["name"],
         "profile": profile,
         "run_id": run.id,
         "status": run.status,
@@ -111,10 +158,11 @@ def run_case(profile: str, goal: str, map_context: dict) -> dict:
 
 def print_case_result(result: dict) -> None:
     print("=" * 100)
-    print(f"PROFILE: {result['profile']}")
-    print(f"RUN ID : {result['run_id']}")
-    print(f"STATUS : {result['status']}")
-    print(f"ERROR  : {result['error']}")
+    print(f"CASE    : {result['case_name']}")
+    print(f"PROFILE : {result['profile']}")
+    print(f"RUN ID  : {result['run_id']}")
+    print(f"STATUS  : {result['status']}")
+    print(f"ERROR   : {result['error']}")
     print("-" * 100)
 
     print("STEPS:")
@@ -134,23 +182,29 @@ def print_case_result(result: dict) -> None:
     print()
 
 
-def main():
-    profiles = ["compact", "rich", "investigate"]
-
-    results = []
-    for profile in profiles:
-        result = run_case(profile, TEST_GOAL, TEST_MAP_CONTEXT)
-        results.append(result)
-        print_case_result(result)
-
+def summarize_results(results: list[dict]) -> None:
     print("=" * 100)
     print("RESUMEN COMPARATIVO")
     print("=" * 100)
+
     for r in results:
         tool_names = [s.get("name") for s in r["steps"] if s.get("type") == "tool"]
         print(
-            f"- {r['profile']}: status={r['status']}, tools={tool_names}, final_text_len={len(r['final_text'])}"
+            f"- case={r['case_name']}, profile={r['profile']}, "
+            f"status={r['status']}, tools={tool_names}, final_text_len={len(r['final_text'])}"
         )
+
+
+def main():
+    results = []
+
+    for case in TEST_CASES:
+        for profile in PROFILES:
+            result = run_case(profile, case)
+            results.append(result)
+            print_case_result(result)
+
+    summarize_results(results)
 
 
 if __name__ == "__main__":
