@@ -5,7 +5,15 @@ from .models import Agent, Run, RunStep
 class AgentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Agent
-        fields = ["id", "name", "system_prompt", "is_active", "created_at"]
+        fields = [
+            "id",
+            "name",
+            "system_prompt",
+            "is_active",
+            "tool_allowlist",
+            "profile",
+            "created_at",
+        ]
         read_only_fields = ["id", "created_at"]
 
 

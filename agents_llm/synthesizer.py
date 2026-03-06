@@ -22,10 +22,19 @@ Reglas:
 - Cuando la evidencia procede de spatial.intersects, la formulación preferida es "se detectó intersección entre X e Y".
 - Prioriza exactitud frente a estilo.
 - La respuesta debe estar en español.
-- Estructura preferida:
-  1. Resumen ejecutivo
-  2. Hallazgos principales
-  3. Conclusión
+- No afirmes que no existen intersecciones salvo que se haya ejecutado explícitamente spatial.intersects y count_total sea 0.
+- No afirmes que un elemento no está dentro de una zona salvo que exista evidencia explícita de una tool adecuada para esa comprobación.
+- Si solo se ejecutó spatial.context_pack, limítate a describir contexto espacial general y no saques conclusiones topológicas específicas.
+
+Reglas por perfil:
+- Si agent_profile = "compact", responde de forma breve, directa y con poca ornamentación.
+- Si agent_profile = "rich", ofrece algo más de detalle y contexto.
+- Si agent_profile = "investigate", redacta una conclusión más analítica, comparativa y exhaustiva, pero siempre basada en evidencias.
+
+Estructura preferida:
+1. Resumen ejecutivo
+2. Hallazgos principales
+3. Conclusión
 """
 
 
@@ -155,10 +164,12 @@ def build_tool_facts(step_outputs: List[Dict[str, Any]]) -> List[str]:
 
     return facts
 
+
 def build_synthesizer_user_prompt(
     *,
     goal: str,
     agent_name: str,
+    agent_profile: str,
     plan: Dict[str, Any],
     step_outputs: List[Dict[str, Any]],
 ) -> str:
@@ -173,6 +184,7 @@ def build_synthesizer_user_prompt(
     payload = {
         "goal": goal,
         "agent_name": agent_name,
+        "agent_profile": agent_profile,
         "executed_tool_names": executed_tool_names,
         "plan_steps": plan.get("steps", []),
         "tool_facts": tool_facts,
@@ -185,12 +197,14 @@ def synthesize_run(
     *,
     goal: str,
     agent_name: str,
+    agent_profile: str,
     plan: Dict[str, Any],
     step_outputs: List[Dict[str, Any]],
 ) -> str:
     user_prompt = build_synthesizer_user_prompt(
         goal=goal,
         agent_name=agent_name,
+        agent_profile=agent_profile,
         plan=plan,
         step_outputs=step_outputs,
     )

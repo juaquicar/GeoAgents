@@ -1,7 +1,11 @@
 from copy import deepcopy
 
 
-def normalize_plan(plan: dict, payload: dict | None = None) -> dict:
+def normalize_plan(
+    plan: dict,
+    payload: dict | None = None,
+    agent_profile: str = "compact",
+) -> dict:
     """
     Devuelve una versión saneada del plan del planner.
     Corrige redundancias, args incoherentes y aplica heurísticas GIS suaves.
@@ -9,6 +13,7 @@ def normalize_plan(plan: dict, payload: dict | None = None) -> dict:
     payload = payload or {}
     goal = (payload.get("goal") or "").lower()
     map_context = payload.get("map_context") or {}
+    profile = agent_profile or "compact"
 
     plan = deepcopy(plan)
     steps = plan.get("steps", [])
@@ -41,8 +46,13 @@ def normalize_plan(plan: dict, payload: dict | None = None) -> dict:
         step["args"] = args
         normalized_steps.append(step)
 
-    # 4) reglas GIS orientadas al objetivo
-    normalized_steps = _apply_gis_goal_rules(normalized_steps, goal, map_context)
+    # 4) reglas GIS orientadas al objetivo y perfil
+    normalized_steps = _apply_gis_goal_rules(
+        normalized_steps,
+        goal,
+        map_context,
+        profile=profile,
+    )
 
     # 5) eliminar redundancias lógicas
     normalized_steps = _remove_redundant_steps(normalized_steps)
@@ -144,10 +154,38 @@ def _normalize_tool_args(tool_name: str, args: dict) -> dict:
     return args
 
 
-def _apply_gis_goal_rules(steps: list, goal: str, map_context: dict) -> list:
+def _is_compact(profile: str) -> bool:
+    return profile == "compact"
+
+
+def _is_rich(profile: str) -> bool:
+    return profile == "rich"
+
+
+def _is_investigate(profile: str) -> bool:
+    return profile == "investigate"
+
+
+def _step_has_required_intersects_args(step: dict) -> bool:
+    if step.get("type") != "tool":
+        return False
+    if step.get("name") != "spatial.intersects":
+        return False
+
+    args = step.get("args") or {}
+    return bool(args.get("source_layer")) and bool(args.get("target_layer"))
+
+
+def _apply_gis_goal_rules(
+    steps: list,
+    goal: str,
+    map_context: dict,
+    profile: str = "compact",
+) -> list:
     """
     Reescribe el plan con heurísticas GIS simples.
     Conservador: corrige/completa, no replantea todo el plan salvo casos claros.
+
     PRIORIDAD:
     1) intersección
     2) proximidad
@@ -159,7 +197,6 @@ def _apply_gis_goal_rules(steps: list, goal: str, map_context: dict) -> list:
     tool_steps = [s for s in steps if s.get("type") == "tool"]
 
     has_context_pack = any(s.get("name") == "spatial.context_pack" for s in tool_steps)
-    has_summary = any(s.get("name") == "spatial.summary" for s in tool_steps)
     has_nearby = any(s.get("name") == "spatial.nearby" for s in tool_steps)
     has_intersects = any(s.get("name") == "spatial.intersects" for s in tool_steps)
     has_query_layer = any(s.get("name") == "spatial.query_layer" for s in tool_steps)
@@ -171,11 +208,43 @@ def _apply_gis_goal_rules(steps: list, goal: str, map_context: dict) -> list:
     # 1) INTERSECTION FIRST
     # ------------------------------------------------------------
     if _goal_is_intersection(goal):
-        # Si ya hay intersects, respetarlo. No lo pises con context_pack.
-        if has_intersects:
+        valid_intersects_steps = [
+            s for s in tool_steps if _step_has_required_intersects_args(s)
+        ]
+        has_valid_intersects = len(valid_intersects_steps) > 0
+
+        if has_valid_intersects:
+            if _is_compact(profile):
+                return _keep_only_tools(steps, {"spatial.intersects"})
+
+            if _is_rich(profile):
+                if _goal_requests_general_context(goal):
+                    return _prefer_primary_plus_optional(
+                        steps,
+                        primary={"spatial.intersects"},
+                        secondary={"spatial.context_pack"},
+                    )
+                return _keep_only_tools(steps, {"spatial.intersects"})
+
+            # investigate
+            if _goal_requests_general_context(goal):
+                if not has_context_pack and bbox:
+                    steps = _insert_before_final(
+                        steps,
+                        {
+                            "type": "tool",
+                            "name": "spatial.context_pack",
+                            "args": {
+                                "bbox": bbox,
+                                "zoom": zoom,
+                                "profile": "rich",
+                            },
+                            "required": False,
+                        },
+                    )
             return steps
 
-        # Si no existe, lo insertamos como paso opcional/conservador
+        # Si no hay intersects válido, NO fabricamos uno required=True sin capas.
         intersects_step = {
             "type": "tool",
             "name": "spatial.intersects",
@@ -185,14 +254,61 @@ def _apply_gis_goal_rules(steps: list, goal: str, map_context: dict) -> list:
             },
             "required": False,
         }
-        return _insert_before_final(steps, intersects_step)
+
+        if _is_compact(profile):
+            # En compact, si no podemos construir intersects completo, mejor no sustituir el plan.
+            return steps
+
+        steps = _insert_before_final(steps, intersects_step)
+
+        if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+            steps = _insert_before_final(
+                steps,
+                {
+                    "type": "tool",
+                    "name": "spatial.context_pack",
+                    "args": {
+                        "bbox": bbox,
+                        "zoom": zoom,
+                        "profile": "rich",
+                    },
+                    "required": False,
+                },
+            )
+
+        return steps
 
     # ------------------------------------------------------------
     # 2) NEARBY SECOND
     # ------------------------------------------------------------
     if _goal_is_nearby(goal):
-        # Si ya hay nearby, respetarlo
         if has_nearby:
+            if _is_compact(profile):
+                return _keep_only_tools(steps, {"spatial.nearby"})
+
+            if _is_rich(profile):
+                if _goal_requests_general_context(goal):
+                    return _prefer_primary_plus_optional(
+                        steps,
+                        primary={"spatial.nearby"},
+                        secondary={"spatial.context_pack"},
+                    )
+                return _keep_only_tools(steps, {"spatial.nearby"})
+
+            if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+                steps = _insert_before_final(
+                    steps,
+                    {
+                        "type": "tool",
+                        "name": "spatial.context_pack",
+                        "args": {
+                            "bbox": bbox,
+                            "zoom": zoom,
+                            "profile": "rich",
+                        },
+                        "required": False,
+                    },
+                )
             return steps
 
         nearby_step = {
@@ -203,16 +319,37 @@ def _apply_gis_goal_rules(steps: list, goal: str, map_context: dict) -> list:
                 "radius_m": 250,
                 "limit": 10,
             },
-            "required": False,
+            "required": True if _is_compact(profile) else False,
         }
-        return _insert_before_final(steps, nearby_step)
+
+        if _is_compact(profile):
+            return [nearby_step, {"type": "final"}]
+
+        steps = _insert_before_final(steps, nearby_step)
+
+        if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+            steps = _insert_before_final(
+                steps,
+                {
+                    "type": "tool",
+                    "name": "spatial.context_pack",
+                    "args": {
+                        "bbox": bbox,
+                        "zoom": zoom,
+                        "profile": "rich",
+                    },
+                    "required": False,
+                },
+            )
+        return steps
 
     # ------------------------------------------------------------
     # 3) LAYER EXPLORATION
     # ------------------------------------------------------------
     if _goal_is_layer_exploration(goal):
-        # Si ya hay query_layer, respetarlo
         if has_query_layer:
+            if _is_compact(profile):
+                return _keep_only_tools(steps, {"spatial.query_layer"})
             return steps
         return steps
 
@@ -220,37 +357,75 @@ def _apply_gis_goal_rules(steps: list, goal: str, map_context: dict) -> list:
     # 4) GENERAL SUMMARY LAST
     # ------------------------------------------------------------
     if _goal_is_general_summary(goal):
-        # Si ya hay context_pack, lo dejamos y quitamos redundancias de resumen
         if has_context_pack:
-            filtered = []
-            for step in steps:
-                if step.get("type") == "tool" and step.get("name") in {
-                    "spatial.summary",
-                    "spatial.query_layer",
-                }:
-                    continue
-                filtered.append(step)
-            return filtered
+            if _is_compact(profile):
+                return _keep_only_tools(steps, {"spatial.context_pack"})
 
-        # Si no hay ni context_pack ni summary, metemos context_pack
-        if not has_summary and bbox:
-            return [
-                {
-                    "type": "tool",
-                    "name": "spatial.context_pack",
-                    "args": {
-                        "bbox": bbox,
-                        "zoom": zoom,
-                        "profile": "compact",
-                    },
-                    "required": True,
+            if _is_rich(profile):
+                return _prefer_primary_plus_optional(
+                    steps,
+                    primary={"spatial.context_pack"},
+                    secondary={"spatial.query_layer"},
+                )
+
+            return steps
+
+        if bbox:
+            context_step = {
+                "type": "tool",
+                "name": "spatial.context_pack",
+                "args": {
+                    "bbox": bbox,
+                    "zoom": zoom,
+                    "profile": "compact" if _is_compact(profile) else "rich",
                 },
-                {"type": "final"},
-            ]
+                "required": True,
+            }
 
-        return steps
+            if _is_compact(profile):
+                return [context_step, {"type": "final"}]
+
+            return _insert_before_final(steps, context_step)
 
     return steps
+
+
+def _keep_only_tools(steps: list, allowed_tool_names: set[str]) -> list:
+    out = []
+    for step in steps:
+        step_type = step.get("type")
+        if step_type == "tool":
+            if step.get("name") in allowed_tool_names:
+                out.append(step)
+        elif step_type != "final":
+            out.append(step)
+    return out + [{"type": "final"}]
+
+
+def _prefer_primary_plus_optional(
+    steps: list,
+    primary: set[str],
+    secondary: set[str],
+) -> list:
+    """
+    Para perfiles intermedios: mantener tool principal y una secundaria útil.
+    """
+    out = []
+    kept_secondary = False
+
+    for step in steps:
+        step_type = step.get("type")
+        if step_type == "tool":
+            name = step.get("name")
+            if name in primary:
+                out.append(step)
+            elif name in secondary and not kept_secondary:
+                out.append(step)
+                kept_secondary = True
+        elif step_type != "final":
+            out.append(step)
+
+    return out + [{"type": "final"}]
 
 
 def _remove_redundant_steps(steps: list) -> list:
@@ -265,7 +440,6 @@ def _remove_redundant_steps(steps: list) -> list:
     filtered = []
     for step in steps:
         if has_context_pack and step.get("type") == "tool":
-            # Si ya hay context_pack, spatial.summary es redundante
             if step.get("name") == "spatial.summary":
                 continue
         filtered.append(step)
@@ -288,6 +462,21 @@ def _goal_is_general_summary(goal: str) -> bool:
         "elementos detectados",
         "hazme un resumen",
         "resumir",
+    ]
+    return any(k in goal for k in keywords)
+
+
+def _goal_requests_general_context(goal: str) -> bool:
+    keywords = [
+        "contexto",
+        "contexto general",
+        "resumen",
+        "resume",
+        "analiza también",
+        "explicando además el contexto",
+        "además del contexto",
+        "panorama general",
+        "visión general",
     ]
     return any(k in goal for k in keywords)
 
@@ -346,7 +535,6 @@ def _bbox_center(bbox: dict | None) -> dict:
 
 
 def _insert_before_final(steps: list, new_step: dict) -> list:
-    # no insertar duplicados por nombre si ya existe la tool
     existing_tool_names = {
         s.get("name") for s in steps if s.get("type") == "tool"
     }

@@ -7,12 +7,21 @@ class Agent(models.Model):
     Definición de un agente (MVP).
     Más adelante: versionado, tool_allowlist, policies, etc.
     """
+    PROFILE_CHOICES = [
+        ("compact", "Compact"),
+        ("rich", "Rich"),
+        ("investigate", "Investigate"),
+    ]
+
     name = models.CharField(max_length=120, unique=True)
     system_prompt = models.TextField(blank=True, default="")
     is_active = models.BooleanField(default=True)
-
+    profile = models.CharField(
+        max_length=20,
+        choices=PROFILE_CHOICES,
+        default="compact",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
-
     tool_allowlist = models.JSONField(default=list, blank=True)  # ["utils.ping","utils.now"]
 
     def __str__(self):

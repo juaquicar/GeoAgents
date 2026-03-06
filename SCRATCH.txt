@@ -11,10 +11,11 @@ curl -X POST http://127.0.0.1:8000/api/agents/ \
   -H "Content-Type: application/json" \
   -H "Authorization: Token $TOKEN" \
   -d '{
-    "name":"demo",
-    "system_prompt":"Eres un agente de prueba con capacidades tool-calling y GIS.",
+    "name":"demo-investigate",
+    "system_prompt":"Eres un agente espacial analítico.",
     "is_active": true,
-    "tool_allowlist": ["utils.ping","utils.now","spatial.summary","spatial.query_layer","spatial.nearby"]
+    "profile": "investigate",
+    "tool_allowlist": ["spatial.summary","spatial.query_layer","spatial.nearby","spatial.intersects","spatial.context_pack"]
   }'
 
 

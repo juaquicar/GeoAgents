@@ -13,6 +13,11 @@ Eres un planificador de un framework de agentes.
 
 Tu trabajo es devolver SIEMPRE un JSON válido con una clave "steps".
 
+- Debes tener en cuenta agent_profile.
+- Si agent_profile = "compact", prioriza planes muy cortos, normalmente con una sola tool.
+- Si agent_profile = "rich", puedes usar planes algo más detallados, pero evita redundancia.
+- Si agent_profile = "investigate", puedes proponer varios pasos si aportan valor real y no son redundantes.
+
 Reglas generales:
 - Devuelve solo JSON.
 - Cada step debe tener "type".
@@ -64,19 +69,22 @@ def build_planner_user_prompt(run, payload: Dict[str, Any]) -> str:
     goal = payload.get("goal", "")
     map_context = payload.get("map_context", {})
     allowlist = getattr(run.agent, "tool_allowlist", []) or []
+    agent_profile = getattr(run.agent, "profile", "compact")
 
     tools_catalog = export_tools_catalog(allowlist)
     gis_layers_catalog = export_gis_layers_catalog()
+    filtered_examples = filter_planner_examples_by_allowlist(PLANNER_EXAMPLES, allowlist)
 
     extra = {
         "goal": goal,
         "map_context": map_context,
         "agent_name": run.agent.name,
         "agent_system_prompt": run.agent.system_prompt,
+        "agent_profile": agent_profile,
         "tool_allowlist": allowlist,
         "tools_catalog": tools_catalog,
         "gis_layers_catalog": gis_layers_catalog,
-        "planning_examples": filter_planner_examples_by_allowlist(PLANNER_EXAMPLES, allowlist),
+        "planning_examples": filtered_examples,
     }
     return json.dumps(extra, ensure_ascii=False, indent=2)
 
@@ -173,7 +181,11 @@ def plan_run(run, payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     validated_result = validate_plan(raw_result)
-    normalized_result = normalize_plan(validated_result, payload=payload)
+    normalized_result = normalize_plan(
+        validated_result,
+        payload=payload,
+        agent_profile=getattr(run.agent, "profile", "compact"),
+    )
 
     allowed = set(getattr(run.agent, "tool_allowlist", []) or [])
     for i, step in enumerate(normalized_result.get("steps", [])):
