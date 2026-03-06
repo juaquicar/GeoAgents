@@ -7,3 +7,7 @@ class AgentsGisConfig(AppConfig):
 
     def ready(self):
         from . import tools_spatial  # noqa
+        from . import tools_query  # noqa
+        from . import tools_nearby  # noqa
+        from . import tools_intersects  # noqa
+        from . import tools_context  # noqa

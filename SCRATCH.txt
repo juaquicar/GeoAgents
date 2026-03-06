@@ -1,0 +1,124 @@
+# AUTH
+curl -X POST http://127.0.0.1:8000/api/token/ \
+  -H "Content-Type: application/json" \
+  -d '{"username":"juanma","password":"Test1234"}'
+
+{"token":"1c794d1b131d8f11f678176176ca13cab6af7518"}
+
+
+# NUEVO AGENTE
+curl -X POST http://127.0.0.1:8000/api/agents/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d '{
+    "name":"demo",
+    "system_prompt":"Eres un agente de prueba con capacidades tool-calling y GIS.",
+    "is_active": true,
+    "tool_allowlist": ["utils.ping","utils.now","spatial.summary","spatial.query_layer","spatial.nearby"]
+  }'
+
+
+  # HABILTIAR TOOLS
+  curl -X PATCH http://127.0.0.1:8000/api/agents/$AGENT_ID/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d '{"tool_allowlist":["utils.ping","utils.now","spatial.summary","spatial.query_layer","spatial.nearby"]}'
+
+
+  # REUN CON NEARBY
+
+  curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"buscar puntos cercanos\",
+      \"tool_call\": {
+        \"name\": \"spatial.nearby\",
+        \"args\": {
+          \"layer\": \"demo_points\",
+          \"point\": {\"lon\": -6.0570, \"lat\": 37.32185},
+          \"radius_m\": 200,
+          \"limit\": 10,
+          \"include_geom\": true
+        }
+      }
+    }
+  }"
+
+# EJECUTAR
+curl -X POST http://127.0.0.1:8000/api/runs/$RUN_ID/execute/ \
+  -H "Authorization: Token $TOKEN"
+
+
+  # STEPS
+  curl http://127.0.0.1:8000/api/runs/$RUN_ID/steps/ \
+  -H "Authorization: Token $TOKEN"
+
+
+
+ # RUN INTERSECT
+ curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"buscar intersecciones\",
+      \"tool_call\": {
+        \"name\": \"spatial.intersects\",
+        \"args\": {
+          \"source_layer\": \"demo_points\",
+          \"target_layer\": \"demo_polygons\",
+          \"bbox\": {\"west\": -6.06, \"south\": 37.32, \"east\": -6.05, \"north\": 37.33},
+          \"limit\": 20,
+          \"include_geom\": true
+        }
+      }
+    }
+  }"
+
+
+
+  # RUN CONTEXTPACK
+curl -X PATCH http://127.0.0.1:8000/api/agents/$AGENT_ID/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d '{"tool_allowlist":["utils.ping","utils.now","spatial.summary","spatial.query_layer","spatial.nearby","spatial.intersects","spatial.context_pack"]}'
+
+
+  curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"construir contexto espacial\",
+      \"tool_call\": {
+        \"name\": \"spatial.context_pack\",
+        \"args\": {
+          \"bbox\": {\"west\": -6.06, \"south\": 37.32, \"east\": -6.05, \"north\": 37.33},
+          \"zoom\": 18,
+          \"profile\": \"compact\",
+          \"layers\": [\"demo_points\", \"demo_polygons\"],
+          \"per_layer_limit\": 5,
+          \"nearby\": [
+            {
+              \"layer\": \"demo_points\",
+              \"point\": {\"lon\": -6.0570, \"lat\": 37.32185},
+              \"radius_m\": 200,
+              \"limit\": 5
+            }
+          ],
+          \"intersections\": [
+            {
+              \"source_layer\": \"demo_points\",
+              \"target_layer\": \"demo_polygons\",
+              \"limit\": 5
+            }
+          ]
+        }
+      }
+    }
+  }"

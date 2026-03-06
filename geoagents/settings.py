@@ -147,5 +147,14 @@ AGENTS_GIS_LAYERS = [
         "geom_col": "the_geom",
         "id_col": "id",
         "fields": ["name"],
+        "filter_fields": ["name"],   # <- nuevo
+    },
+    {
+        "name": "demo_polygons",
+        "table": "demo_polygons",
+        "geom_col": "the_geom",
+        "id_col": "id",
+        "fields": ["name"],
+        "filter_fields": ["name"],
     },
 ]
