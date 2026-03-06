@@ -177,6 +177,7 @@ def execute_run(run: Run) -> Run:
             final_text = synthesize_run(
                 goal=goal,
                 agent_name=run.agent.name,
+                plan=plan,
                 step_outputs=executed_outputs,
             )
 
