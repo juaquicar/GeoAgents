@@ -1,50 +1,113 @@
 import json
 from typing import Any, Dict
 
+from agents_tools.introspection import export_tools_catalog
+from agents_gis.introspection import export_gis_layers_catalog
+
 from .client import chat_completion_json
 
 
 PLANNER_SYSTEM_PROMPT = """
 Eres un planificador de un framework de agentes.
+
 Tu trabajo es devolver SIEMPRE un JSON válido con una clave "steps".
 
-Reglas:
+Reglas generales:
 - Devuelve solo JSON.
 - Cada step debe tener "type".
 - Si type == "tool", debe tener "name" y "args".
+- Los nombres de tools deben salir EXCLUSIVAMENTE de tools_catalog.
+- No inventes tools.
 - El último step debe ser {"type": "final"}.
-- Usa herramientas GIS cuando el objetivo implique análisis espacial, proximidad, intersección o contexto de mapa.
-- Si existe map_context con bbox, suele ser útil usar spatial.context_pack.
-- No inventes tools que no existan.
-- Tools disponibles:
-  - spatial.summary
-  - spatial.query_layer
-  - spatial.nearby
-  - spatial.intersects
-  - spatial.context_pack
-  - utils.ping
-  - utils.now
-- Si usas spatial.summary, spatial.context_pack, spatial.query_layer o spatial.intersects, y existe map_context.bbox, debes incluir bbox en args.
-- No generes pasos redundantes. Si usas spatial.context_pack para un resumen general, normalmente no hace falta añadir spatial.summary después salvo que haya una razón clara.
-- Si el objetivo es un resumen espacial general de una zona, prioriza un único step con spatial.context_pack.
 - En los steps de type="tool", puedes incluir "required": true o false.
 - Si no estás seguro de que un step sea imprescindible, usa "required": false.
-- Para análisis espaciales generales, el step principal suele ser required=true.
-- El step final debe ser {"type": "final"}.
+
+Reglas de contexto:
+- Si una tool requiere bbox y existe map_context.bbox, debes incluirlo en args.
+- Si una tool acepta zoom y existe map_context.zoom, debes incluirlo en args cuando sea útil.
+- No generes pasos redundantes.
+- Si el objetivo es un resumen espacial general de una zona, prioriza un único step con spatial.context_pack.
+
+Reglas GIS:
+- Si usas una tool que requiere una capa (layer, source_layer, target_layer), debes elegir nombres EXCLUSIVAMENTE de gis_layers_catalog.
+- No inventes nombres de capas.
+- Si necesitas filtros, usa solo campos presentes en filter_fields de la capa correspondiente.
+- Si el objetivo menciona proximidad, suele ser adecuado usar spatial.nearby.
+- Si el objetivo menciona intersección, solape, cruce o elementos contenidos entre capas, suele ser adecuado usar spatial.intersects.
+- Si el objetivo es explorar una capa concreta dentro de un bbox, suele ser adecuado usar spatial.query_layer.
 """
 
 def build_planner_user_prompt(run, payload: Dict[str, Any]) -> str:
     goal = payload.get("goal", "")
     map_context = payload.get("map_context", {})
+    allowlist = getattr(run.agent, "tool_allowlist", []) or []
+
+    tools_catalog = export_tools_catalog(allowlist)
+    gis_layers_catalog = export_gis_layers_catalog()
+
     extra = {
         "goal": goal,
         "map_context": map_context,
         "agent_name": run.agent.name,
         "agent_system_prompt": run.agent.system_prompt,
-        "tool_allowlist": getattr(run.agent, "tool_allowlist", []),
+        "tool_allowlist": allowlist,
+        "tools_catalog": tools_catalog,
+        "gis_layers_catalog": gis_layers_catalog,
     }
     return json.dumps(extra, ensure_ascii=False, indent=2)
 
+def validate_plan_gis_references(plan: dict, gis_layers_catalog: list) -> dict:
+    valid_layer_names = {layer.get("name") for layer in gis_layers_catalog}
+
+    for i, step in enumerate(plan.get("steps", [])):
+        if step.get("type") != "tool":
+            continue
+
+        name = step.get("name")
+        args = step.get("args") or {}
+
+        # tools con un layer
+        if name in {"spatial.query_layer", "spatial.nearby"}:
+            layer = args.get("layer")
+            if layer and layer not in valid_layer_names:
+                raise ValueError(f"Planner proposed unknown GIS layer at step {i}: {layer}")
+
+        # tools con dos layers
+        if name == "spatial.intersects":
+            source_layer = args.get("source_layer")
+            target_layer = args.get("target_layer")
+
+            if source_layer and source_layer not in valid_layer_names:
+                raise ValueError(f"Planner proposed unknown source_layer at step {i}: {source_layer}")
+            if target_layer and target_layer not in valid_layer_names:
+                raise ValueError(f"Planner proposed unknown target_layer at step {i}: {target_layer}")
+
+        # context_pack puede llevar nearby / intersections internas
+        if name == "spatial.context_pack":
+            nearby = args.get("nearby") or []
+            intersections = args.get("intersections") or []
+
+            for j, item in enumerate(nearby):
+                layer = item.get("layer")
+                if layer and layer not in valid_layer_names:
+                    raise ValueError(
+                        f"Planner proposed unknown nearby.layer at step {i}, item {j}: {layer}"
+                    )
+
+            for j, item in enumerate(intersections):
+                source_layer = item.get("source_layer")
+                target_layer = item.get("target_layer")
+
+                if source_layer and source_layer not in valid_layer_names:
+                    raise ValueError(
+                        f"Planner proposed unknown intersections.source_layer at step {i}, item {j}: {source_layer}"
+                    )
+                if target_layer and target_layer not in valid_layer_names:
+                    raise ValueError(
+                        f"Planner proposed unknown intersections.target_layer at step {i}, item {j}: {target_layer}"
+                    )
+
+    return plan
 
 
 def validate_plan(plan: dict) -> dict:
@@ -85,13 +148,17 @@ def plan_run(run, payload: Dict[str, Any]) -> Dict[str, Any]:
         temperature=0.1,
     )
 
-    if not isinstance(result, dict):
-        raise ValueError("Planner did not return a JSON object")
-
-    steps = result.get("steps")
-    if not isinstance(steps, list) or not steps:
-        raise ValueError("Planner returned invalid or empty steps")
-
     result = validate_plan(result)
+
+    allowed = set(getattr(run.agent, "tool_allowlist", []) or [])
+    for i, step in enumerate(result.get("steps", [])):
+        if step.get("type") == "tool":
+            name = step.get("name")
+            if allowed and name not in allowed:
+                raise ValueError(f"Planner proposed a non-allowed tool at step {i}: {name}")
+
+    gis_layers_catalog = export_gis_layers_catalog()
+    result = validate_plan_gis_references(result, gis_layers_catalog)
+
     return result
 
