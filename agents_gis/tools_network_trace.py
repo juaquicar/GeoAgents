@@ -110,15 +110,18 @@ class SpatialNetworkTraceTool(BaseTool):
             if not required_bbox_keys.issubset(bbox.keys()):
                 return ToolResult(ok=False, error="bbox must contain west/south/east/north")
 
+            try:
+                west = float(bbox["west"])
+                south = float(bbox["south"])
+                east = float(bbox["east"])
+                north = float(bbox["north"])
+            except Exception:
+                return ToolResult(ok=False, error="bbox values must be numeric")
+
             where_clauses.append(
                 f"ST_Intersects({geom_col}, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
             )
-            where_params.extend([
-                float(bbox["west"]),
-                float(bbox["south"]),
-                float(bbox["east"]),
-                float(bbox["north"]),
-            ])
+            where_params.extend([west, south, east, north])
 
         where_sql = " AND ".join(where_clauses)
 
