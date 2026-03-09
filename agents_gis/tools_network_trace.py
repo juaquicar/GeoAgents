@@ -167,6 +167,14 @@ class SpatialNetworkTraceTool(BaseTool):
         graph = nx.Graph()
 
         for row in rows:
+            if (
+                row.get("start_lon") is None
+                or row.get("start_lat") is None
+                or row.get("end_lon") is None
+                or row.get("end_lat") is None
+            ):
+                continue
+
             a = _node_key(row["start_lon"], row["start_lat"])
             b = _node_key(row["end_lon"], row["end_lat"])
             length_m = float(row["length_m"] or 0.0)
