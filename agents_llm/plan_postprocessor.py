@@ -265,7 +265,7 @@ def _step_has_required_network_trace_args(step: dict) -> bool:
     args = step.get("args") or {}
     has_layer = bool(args.get("layer"))
     has_start = _is_valid_lonlat_point(args.get("start_point"))
-    has_end = _is_valid_lonlat_point(args.get("start_point"))
+    has_end = _is_valid_lonlat_point(args.get("end_point"))
 
     return (
         has_layer and has_start and has_end
@@ -664,22 +664,40 @@ def _bbox_center(bbox: dict | None) -> dict:
     if not bbox:
         return {"lon": 0.0, "lat": 0.0}
 
+    west = _to_float_or_default(bbox.get("west"), 0.0)
+    east = _to_float_or_default(bbox.get("east"), 0.0)
+    south = _to_float_or_default(bbox.get("south"), 0.0)
+    north = _to_float_or_default(bbox.get("north"), 0.0)
+
     return {
-        "lon": (float(bbox["west"]) + float(bbox["east"])) / 2.0,
-        "lat": (float(bbox["south"]) + float(bbox["north"])) / 2.0,
+        "lon": (west + east) / 2.0,
+        "lat": (south + north) / 2.0,
     }
 
 
 def _bbox_corner_start(bbox: dict | None) -> dict:
     if not bbox:
         return {"lon": 0.0, "lat": 0.0}
-    return {"lon": float(bbox["west"]), "lat": float(bbox["south"])}
+    return {
+        "lon": _to_float_or_default(bbox.get("west"), 0.0),
+        "lat": _to_float_or_default(bbox.get("south"), 0.0),
+    }
 
 
 def _bbox_corner_end(bbox: dict | None) -> dict:
     if not bbox:
         return {"lon": 0.0, "lat": 0.0}
-    return {"lon": float(bbox["east"]), "lat": float(bbox["north"])}
+    return {
+        "lon": _to_float_or_default(bbox.get("east"), 0.0),
+        "lat": _to_float_or_default(bbox.get("north"), 0.0),
+    }
+
+
+def _to_float_or_default(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _insert_before_final(steps: list, new_step: dict) -> list:
