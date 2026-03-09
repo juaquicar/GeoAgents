@@ -1,0 +1,7 @@
+[project]
+name = "geoagents"
+version = "0.1.0"
+
+authors = [
+  { name="Juan Manuel Quijada", email="quijada.jm@gmail.com" }
+]

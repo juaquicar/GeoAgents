@@ -17,7 +17,6 @@ LINE_HINTS = [
 ]
 
 
-
 def _text_blob(layer: Dict[str, Any]) -> str:
     parts = [
         str(layer.get("name", "")),
@@ -54,28 +53,32 @@ def classify_layer_kind(layer: Dict[str, Any]) -> str:
     return best_kind
 
 
-def find_best_point_layer(gis_layers_catalog: List[Dict[str, Any]]) -> Optional[str]:
+def _sorted_candidates(
+    gis_layers_catalog: List[Dict[str, Any]],
+    kind: str,
+) -> List[str]:
     candidates = []
     for layer in gis_layers_catalog:
         scores = score_layer_kind(layer)
-        candidates.append((scores["point"], layer.get("name")))
+        candidates.append((scores.get(kind, 0), layer.get("name")))
 
     candidates.sort(reverse=True, key=lambda x: (x[0], x[1] or ""))
-    if not candidates or candidates[0][0] <= 0:
-        return None
-    return candidates[0][1]
+    return [name for score, name in candidates if score > 0 and name]
+
+
+def find_best_point_layer(gis_layers_catalog: List[Dict[str, Any]]) -> Optional[str]:
+    candidates = _sorted_candidates(gis_layers_catalog, "point")
+    return candidates[0] if candidates else None
 
 
 def find_best_polygon_layer(gis_layers_catalog: List[Dict[str, Any]]) -> Optional[str]:
-    candidates = []
-    for layer in gis_layers_catalog:
-        scores = score_layer_kind(layer)
-        candidates.append((scores["polygon"], layer.get("name")))
+    candidates = _sorted_candidates(gis_layers_catalog, "polygon")
+    return candidates[0] if candidates else None
 
-    candidates.sort(reverse=True, key=lambda x: (x[0], x[1] or ""))
-    if not candidates or candidates[0][0] <= 0:
-        return None
-    return candidates[0][1]
+
+def find_best_line_layer(gis_layers_catalog: List[Dict[str, Any]]) -> Optional[str]:
+    candidates = _sorted_candidates(gis_layers_catalog, "line")
+    return candidates[0] if candidates else None
 
 
 def infer_nearby_layer(
@@ -87,13 +90,10 @@ def infer_nearby_layer(
     """
     goal = (goal or "").lower()
 
-    # Futuro: si el goal menciona explícitamente una capa o tipo,
-    # se puede refinar aquí.
     best_point = find_best_point_layer(gis_layers_catalog)
     if best_point:
         return best_point
 
-    # Fallback: primera capa si no hay mejor pista
     if gis_layers_catalog:
         return gis_layers_catalog[0].get("name")
 
@@ -121,3 +121,57 @@ def infer_intersection_layers(
         "source_layer": source_layer,
         "target_layer": target_layer,
     }
+
+
+def infer_query_layer(
+    goal: str,
+    gis_layers_catalog: List[Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Intenta inferir la mejor capa para spatial.query_layer a partir del goal.
+    Reglas:
+    - si el goal parece hablar de puntos -> capa de puntos
+    - si habla de zonas/polígonos -> capa poligonal
+    - si habla de líneas/tramos -> capa lineal
+    - si no hay pistas, prioriza punto, luego polígono, luego línea
+    """
+    goal = (goal or "").lower()
+
+    point_terms = [
+        "punto", "puntos", "point", "points", "nodo", "nodos",
+        "cto", "cpe", "ont", "dispositivo", "dispositivos",
+    ]
+    polygon_terms = [
+        "zona", "zonas", "area", "areas", "poligono", "polígonos",
+        "polygon", "polygons", "sector", "sectores", "parcela", "parcelas",
+    ]
+    line_terms = [
+        "linea", "línea", "lineas", "líneas", "line", "lines",
+        "tramo", "tramos", "segmento", "segmentos", "cable", "cables",
+    ]
+
+    if any(term in goal for term in point_terms):
+        layer = find_best_point_layer(gis_layers_catalog)
+        if layer:
+            return layer
+
+    if any(term in goal for term in polygon_terms):
+        layer = find_best_polygon_layer(gis_layers_catalog)
+        if layer:
+            return layer
+
+    if any(term in goal for term in line_terms):
+        layer = find_best_line_layer(gis_layers_catalog)
+        if layer:
+            return layer
+
+    # fallback general
+    for finder in (find_best_point_layer, find_best_polygon_layer, find_best_line_layer):
+        layer = finder(gis_layers_catalog)
+        if layer:
+            return layer
+
+    if gis_layers_catalog:
+        return gis_layers_catalog[0].get("name")
+
+    return None
