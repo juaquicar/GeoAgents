@@ -5,8 +5,21 @@ from openai import OpenAI
 from django.conf import settings
 
 
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        if value is None:
+            raise TypeError
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def get_openai_client() -> OpenAI:
-    return OpenAI(api_key=settings.OPENAI_API_KEY)
+    timeout = _coerce_float(
+        getattr(settings, "AGENTS_OPENAI_TIMEOUT_SECONDS", None),
+        60.0,
+    )
+    return OpenAI(api_key=settings.OPENAI_API_KEY, timeout=timeout)
 
 
 def chat_completion_json(
