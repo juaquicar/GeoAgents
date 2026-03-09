@@ -192,6 +192,23 @@ class SpatialNetworkTraceTool(BaseTool):
                 geom_geojson=row.get("geom_geojson"),
             )
 
+        if graph.number_of_nodes() == 0:
+            return ToolResult(
+                ok=True,
+                data={
+                    "layer": layer_name,
+                    "path_found": False,
+                    "reason": "no_valid_network_nodes",
+                    "start_point": {"lon": start_lon, "lat": start_lat},
+                    "end_point": {"lon": end_lon, "lat": end_lat},
+                    "segment_ids": [],
+                    "segment_names": [],
+                    "total_length_m": 0.0,
+                    "node_count": 0,
+                    "include_geom": include_geom,
+                },
+            )
+
         def nearest_graph_node(lon: float, lat: float):
             best_node = None
             best_dist = None
@@ -208,7 +225,21 @@ class SpatialNetworkTraceTool(BaseTool):
         end_node, end_snap_m = nearest_graph_node(end_lon, end_lat)
 
         if start_node is None or end_node is None:
-            return ToolResult(ok=False, error="unable to snap start/end nodes")
+            return ToolResult(
+                ok=True,
+                data={
+                    "layer": layer_name,
+                    "path_found": False,
+                    "reason": "unable_to_snap_nodes",
+                    "start_point": {"lon": start_lon, "lat": start_lat},
+                    "end_point": {"lon": end_lon, "lat": end_lat},
+                    "segment_ids": [],
+                    "segment_names": [],
+                    "total_length_m": 0.0,
+                    "node_count": 0,
+                    "include_geom": include_geom,
+                },
+            )
 
         if start_snap_m > max_snap_distance_m or end_snap_m > max_snap_distance_m:
             return ToolResult(
