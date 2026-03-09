@@ -20,6 +20,36 @@ from agents_core.runner import execute_run  # noqa: E402
 
 TEST_CASES = [
     {
+      "name": "trace_network",
+      "goal": "Traza una ruta por la red",
+      "map_context": {
+        "bbox": {
+          "west": -6.06,
+          "south": 37.32,
+          "east": -6.05,
+          "north": 37.33
+        },
+        "zoom": 18
+      },
+      "trace_context": {
+        "start_point": {"lon": -6.0590, "lat": 37.3210},
+        "end_point": {"lon": -6.0545, "lat": 37.3225}
+      }
+    },
+   {
+        "name": "intersects_simple",
+        "goal": "Comprueba la relación espacial entre los puntos y las lineas en esta área",
+        "map_context": {
+            "bbox": {
+                "west": -6.06,
+                "south": 37.32,
+                "east": -6.05,
+                "north": 37.33,
+            },
+            "zoom": 18,
+        },
+    },
+    {
         "name": "intersects_simple",
         "goal": "Comprueba la relación espacial entre los puntos y las zonas en esta área",
         "map_context": {
@@ -32,6 +62,19 @@ TEST_CASES = [
             "zoom": 18,
         },
     },
+     {
+         "name": "intersects_simple",
+         "goal": "Comprueba la relación espacial entre las lineas y las zonas en esta área",
+         "map_context": {
+             "bbox": {
+                 "west": -6.06,
+                 "south": 37.32,
+                 "east": -6.05,
+                 "north": 37.33,
+             },
+             "zoom": 18,
+         },
+     },
     {
         "name": "nearby_simple",
         "goal": "¿Qué elementos hay cerca del centro del mapa?",
@@ -71,6 +114,19 @@ TEST_CASES = [
             "zoom": 18,
         },
     },
+     {
+         "name": "mixed_context_intersects",
+         "goal": "Analiza esta zona y comprueba si los segmentos están dentro de las zonas, explicando además el contexto espacial general",
+         "map_context": {
+             "bbox": {
+                 "west": -6.06,
+                 "south": 37.32,
+                 "east": -6.05,
+                 "north": 37.33,
+             },
+             "zoom": 18,
+         },
+     },
     {
         "name": "query_points_layer",
         "goal": "Explora la capa de puntos en esta zona",
@@ -84,6 +140,19 @@ TEST_CASES = [
             "zoom": 18,
         },
     },
+     {
+         "name": "query_lines_layer",
+         "goal": "Explora la capa de lineas en esta zona",
+         "map_context": {
+             "bbox": {
+                 "west": -6.06,
+                 "south": 37.32,
+                 "east": -6.05,
+                 "north": 37.33,
+             },
+             "zoom": 18,
+         },
+     },
     {
         "name": "query_polygons_layer",
         "goal": "Consulta la capa de zonas en esta área",
@@ -107,6 +176,7 @@ TOOL_ALLOWLIST = [
     "spatial.nearby",
     "spatial.intersects",
     "spatial.context_pack",
+    "spatial.network_trace"
 ]
 
 
@@ -164,6 +234,7 @@ def run_case(profile: str, case: dict) -> dict:
         input_json={
             "goal": case["goal"],
             "map_context": case["map_context"],
+            "trace_context": case.get("trace_context", {}),
         },
         status="queued",
     )

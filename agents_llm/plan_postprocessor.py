@@ -4,6 +4,7 @@ from agents_gis.inference import (
     infer_intersection_layers,
     infer_nearby_layer,
     infer_query_layer,
+    infer_network_layer,
 )
 
 
@@ -13,13 +14,10 @@ def normalize_plan(
     agent_profile: str = "compact",
     gis_layers_catalog: list | None = None,
 ) -> dict:
-    """
-    Devuelve una versión saneada del plan del planner.
-    Corrige redundancias, args incoherentes y aplica heurísticas GIS suaves.
-    """
     payload = payload or {}
     goal = (payload.get("goal") or "").lower()
     map_context = payload.get("map_context") or {}
+    trace_context = payload.get("trace_context") or {}
     profile = agent_profile or "compact"
     gis_layers_catalog = gis_layers_catalog or []
 
@@ -39,16 +37,10 @@ def normalize_plan(
         name = step.get("name", "")
         args = step.get("args") or {}
 
-        # 1) enriquecer args desde map_context
-        args = _inject_map_context(name, args, map_context)
-
-        # 2) completar inferencias GIS si faltan args clave
+        args = _inject_map_context(name, args, map_context, trace_context)
         args = _inject_gis_inference(name, args, goal, gis_layers_catalog)
-
-        # 3) normalización de args por tool
         args = _normalize_tool_args(name, args)
 
-        # 4) deduplicación exacta tool+args
         signature = _tool_signature(name, args)
         if signature in seen_tool_signatures:
             continue
@@ -57,19 +49,17 @@ def normalize_plan(
         step["args"] = args
         normalized_steps.append(step)
 
-    # 5) reglas GIS orientadas al objetivo y perfil
     normalized_steps = _apply_gis_goal_rules(
         normalized_steps,
         goal,
         map_context,
+        trace_context,
         profile=profile,
         gis_layers_catalog=gis_layers_catalog,
     )
 
-    # 6) eliminar redundancias lógicas
     normalized_steps = _remove_redundant_steps(normalized_steps)
 
-    # 7) asegurar un único final al final
     non_final = [s for s in normalized_steps if s.get("type") != "final"]
     normalized_steps = non_final + [{"type": "final"}]
 
@@ -81,8 +71,14 @@ def _tool_signature(name: str, args: dict) -> tuple:
     return name, repr(sorted(args.items())) if isinstance(args, dict) else repr(args)
 
 
-def _inject_map_context(tool_name: str, args: dict, map_context: dict) -> dict:
+def _inject_map_context(
+    tool_name: str,
+    args: dict,
+    map_context: dict,
+    trace_context: dict | None = None,
+) -> dict:
     args = deepcopy(args or {})
+    trace_context = trace_context or {}
 
     bbox = map_context.get("bbox")
     zoom = map_context.get("zoom")
@@ -92,6 +88,7 @@ def _inject_map_context(tool_name: str, args: dict, map_context: dict) -> dict:
         "spatial.context_pack",
         "spatial.query_layer",
         "spatial.intersects",
+        "spatial.network_trace",
     }:
         if "bbox" not in args and bbox:
             args["bbox"] = bbox
@@ -99,6 +96,14 @@ def _inject_map_context(tool_name: str, args: dict, map_context: dict) -> dict:
     if tool_name in {"spatial.summary", "spatial.context_pack"}:
         if "zoom" not in args and zoom is not None:
             args["zoom"] = zoom
+
+    if tool_name == "spatial.network_trace":
+        if "start_point" not in args and trace_context.get("start_point"):
+            args["start_point"] = trace_context["start_point"]
+        if "end_point" not in args and trace_context.get("end_point"):
+            args["end_point"] = trace_context["end_point"]
+
+
 
     return args
 
@@ -126,6 +131,10 @@ def _inject_gis_inference(
     elif tool_name == "spatial.query_layer":
         if not args.get("layer"):
             args["layer"] = infer_query_layer(goal, gis_layers_catalog)
+
+    elif tool_name == "spatial.network_trace":
+        if not args.get("layer"):
+            args["layer"] = infer_network_layer(goal, gis_layers_catalog)
 
     return args
 
@@ -190,6 +199,20 @@ def _normalize_tool_args(tool_name: str, args: dict) -> dict:
         else:
             args["radius_m"] = 250.0
 
+    if tool_name == "spatial.network_trace":
+        if "include_geom" in args:
+            args["include_geom"] = bool(args["include_geom"])
+        else:
+            args["include_geom"] = True
+
+        if "max_snap_distance_m" in args:
+            try:
+                args["max_snap_distance_m"] = max(1.0, min(float(args["max_snap_distance_m"]), 5000.0))
+            except Exception:
+                args["max_snap_distance_m"] = 250.0
+        else:
+            args["max_snap_distance_m"] = 250.0
+
     return args
 
 
@@ -206,78 +229,75 @@ def _is_investigate(profile: str) -> bool:
 
 
 def _step_has_required_intersects_args(step: dict) -> bool:
-    if step.get("type") != "tool":
+    if step.get("type") != "tool" or step.get("name") != "spatial.intersects":
         return False
-    if step.get("name") != "spatial.intersects":
-        return False
-
     args = step.get("args") or {}
     return bool(args.get("source_layer")) and bool(args.get("target_layer"))
 
 
 def _step_has_required_nearby_args(step: dict) -> bool:
-    if step.get("type") != "tool":
+    if step.get("type") != "tool" or step.get("name") != "spatial.nearby":
         return False
-    if step.get("name") != "spatial.nearby":
-        return False
-
     args = step.get("args") or {}
     return bool(args.get("layer")) and bool(args.get("point"))
 
 
 def _step_has_required_query_layer_args(step: dict) -> bool:
+    if step.get("type") != "tool" or step.get("name") != "spatial.query_layer":
+        return False
+    args = step.get("args") or {}
+    return bool(args.get("layer"))
+
+def _is_valid_lonlat_point(point: dict | None) -> bool:
+    if not isinstance(point, dict):
+        return False
+    if point.get("lon") is None or point.get("lat") is None:
+        return False
+    return True
+
+def _step_has_required_network_trace_args(step: dict) -> bool:
     if step.get("type") != "tool":
         return False
-    if step.get("name") != "spatial.query_layer":
+
+    if step.get("name") != "spatial.network_trace":
         return False
 
     args = step.get("args") or {}
-    return bool(args.get("layer"))
+    has_layer = bool(args.get("layer"))
+    has_start = _is_valid_lonlat_point(args.get("start_point"))
+    has_end = _is_valid_lonlat_point(args.get("start_point"))
+
+    return (
+        has_layer and has_start and has_end
+    )
 
 
 def _apply_gis_goal_rules(
     steps: list,
     goal: str,
     map_context: dict,
+    trace_context: dict | None = None,
     profile: str = "compact",
     gis_layers_catalog: list | None = None,
 ) -> list:
-    """
-    Reescribe el plan con heurísticas GIS simples.
-    Conservador: corrige/completa, no replantea todo el plan salvo casos claros.
-
-    PRIORIDAD:
-    1) intersección
-    2) proximidad
-    3) exploración de capa
-    4) resumen general
-    """
     goal = (goal or "").lower()
+    trace_context = trace_context or {}
     gis_layers_catalog = gis_layers_catalog or []
 
     tool_steps = [s for s in steps if s.get("type") == "tool"]
-
     has_context_pack = any(s.get("name") == "spatial.context_pack" for s in tool_steps)
-    has_nearby = any(s.get("name") == "spatial.nearby" for s in tool_steps)
-    has_intersects = any(s.get("name") == "spatial.intersects" for s in tool_steps)
-    has_query_layer = any(s.get("name") == "spatial.query_layer" for s in tool_steps)
 
     bbox = map_context.get("bbox")
     zoom = map_context.get("zoom")
 
-    # ------------------------------------------------------------
-    # 1) INTERSECTION FIRST
-    # ------------------------------------------------------------
+    # 1) INTERSECTION
     if _goal_is_intersection(goal):
-        valid_intersects_steps = [
-            s for s in tool_steps if _step_has_required_intersects_args(s)
-        ]
-        has_valid_intersects = len(valid_intersects_steps) > 0
+        valid_steps = [s for s in tool_steps if _step_has_required_intersects_args(s)]
+        has_valid = len(valid_steps) > 0
 
-        if has_valid_intersects:
+        if has_valid:
             if _is_compact(profile):
                 return _keep_only_tools(steps, {"spatial.intersects"})
-
             if _is_rich(profile):
                 if _goal_requests_general_context(goal):
                     return _prefer_primary_plus_optional(
@@ -286,28 +306,18 @@ def _apply_gis_goal_rules(
                         secondary={"spatial.context_pack"},
                     )
                 return _keep_only_tools(steps, {"spatial.intersects"})
-
             if _goal_requests_general_context(goal) and not has_context_pack and bbox:
                 steps = _insert_before_final(
                     steps,
-                    {
-                        "type": "tool",
-                        "name": "spatial.context_pack",
-                        "args": {
-                            "bbox": bbox,
-                            "zoom": zoom,
-                            "profile": "rich",
-                        },
-                        "required": False,
-                    },
+                    _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
                 )
             return steps
 
-        inferred_layers = infer_intersection_layers(goal, gis_layers_catalog)
-        source_layer = inferred_layers.get("source_layer")
-        target_layer = inferred_layers.get("target_layer")
+        inferred = infer_intersection_layers(goal, gis_layers_catalog)
+        source_layer = inferred.get("source_layer")
+        target_layer = inferred.get("target_layer")
 
-        intersects_step = {
+        new_step = {
             "type": "tool",
             "name": "spatial.intersects",
             "args": {
@@ -321,41 +331,79 @@ def _apply_gis_goal_rules(
 
         if _is_compact(profile):
             if source_layer and target_layer:
-                return [intersects_step, {"type": "final"}]
+                return [new_step, {"type": "final"}]
             return steps
 
-        steps = _insert_before_final(steps, intersects_step)
-
+        steps = _insert_before_final(steps, new_step)
         if _goal_requests_general_context(goal) and not has_context_pack and bbox:
             steps = _insert_before_final(
                 steps,
-                {
-                    "type": "tool",
-                    "name": "spatial.context_pack",
-                    "args": {
-                        "bbox": bbox,
-                        "zoom": zoom,
-                        "profile": "rich",
-                    },
-                    "required": False,
-                },
+                _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
             )
-
         return steps
 
-    # ------------------------------------------------------------
-    # 2) NEARBY SECOND
-    # ------------------------------------------------------------
-    if _goal_is_nearby(goal):
-        valid_nearby_steps = [
-            s for s in tool_steps if _step_has_required_nearby_args(s)
-        ]
-        has_valid_nearby = len(valid_nearby_steps) > 0
+    # 2) NETWORK TRACE
+    if _goal_is_network_trace(goal):
+        valid_steps = [s for s in tool_steps if _step_has_required_network_trace_args(s)]
+        has_valid = len(valid_steps) > 0
 
-        if has_valid_nearby:
+        if has_valid:
+            if _is_compact(profile):
+                return _keep_only_tools(steps, {"spatial.network_trace"})
+            if _is_rich(profile):
+                if _goal_requests_general_context(goal):
+                    return _prefer_primary_plus_optional(
+                        steps,
+                        primary={"spatial.network_trace"},
+                        secondary={"spatial.context_pack"},
+                    )
+                return _keep_only_tools(steps, {"spatial.network_trace"})
+            if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+                steps = _insert_before_final(
+                    steps,
+                    _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
+                )
+            return steps
+
+        inferred_layer = infer_network_layer(goal, gis_layers_catalog)
+        start_point = trace_context.get("start_point") or _bbox_corner_start(bbox)
+        end_point = trace_context.get("end_point") or _bbox_corner_end(bbox)
+
+        new_step = {
+            "type": "tool",
+            "name": "spatial.network_trace",
+            "args": {
+                "layer": inferred_layer,
+                "bbox": bbox,
+                "start_point": start_point,
+                "end_point": end_point,
+                "include_geom": True,
+                "max_snap_distance_m": 250,
+            },
+            "required": bool(inferred_layer and start_point and end_point and _is_compact(profile)),
+        }
+
+        if _is_compact(profile):
+            if inferred_layer and start_point and end_point:
+                return [new_step, {"type": "final"}]
+            return steps
+
+        steps = _insert_before_final(steps, new_step)
+        if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+            steps = _insert_before_final(
+                steps,
+                _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
+            )
+        return steps
+
+    # 3) NEARBY
+    if _goal_is_nearby(goal):
+        valid_steps = [s for s in tool_steps if _step_has_required_nearby_args(s)]
+        has_valid = len(valid_steps) > 0
+
+        if has_valid:
             if _is_compact(profile):
                 return _keep_only_tools(steps, {"spatial.nearby"})
-
             if _is_rich(profile):
                 if _goal_requests_general_context(goal):
                     return _prefer_primary_plus_optional(
@@ -364,73 +412,48 @@ def _apply_gis_goal_rules(
                         secondary={"spatial.context_pack"},
                     )
                 return _keep_only_tools(steps, {"spatial.nearby"})
-
             if _goal_requests_general_context(goal) and not has_context_pack and bbox:
                 steps = _insert_before_final(
                     steps,
-                    {
-                        "type": "tool",
-                        "name": "spatial.context_pack",
-                        "args": {
-                            "bbox": bbox,
-                            "zoom": zoom,
-                            "profile": "rich",
-                        },
-                        "required": False,
-                    },
+                    _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
                 )
             return steps
 
-        inferred_nearby_layer = infer_nearby_layer(goal, gis_layers_catalog)
+        inferred_layer = infer_nearby_layer(goal, gis_layers_catalog)
 
-        nearby_step = {
+        new_step = {
             "type": "tool",
             "name": "spatial.nearby",
             "args": {
-                "layer": inferred_nearby_layer,
+                "layer": inferred_layer,
                 "point": _bbox_center(bbox) if bbox else {"lon": 0.0, "lat": 0.0},
                 "radius_m": 250,
                 "limit": 10,
             },
-            "required": bool(inferred_nearby_layer and _is_compact(profile)),
+            "required": bool(inferred_layer and _is_compact(profile)),
         }
 
         if _is_compact(profile):
-            if inferred_nearby_layer:
-                return [nearby_step, {"type": "final"}]
+            if inferred_layer:
+                return [new_step, {"type": "final"}]
             return steps
 
-        steps = _insert_before_final(steps, nearby_step)
-
+        steps = _insert_before_final(steps, new_step)
         if _goal_requests_general_context(goal) and not has_context_pack and bbox:
             steps = _insert_before_final(
                 steps,
-                {
-                    "type": "tool",
-                    "name": "spatial.context_pack",
-                    "args": {
-                        "bbox": bbox,
-                        "zoom": zoom,
-                        "profile": "rich",
-                    },
-                    "required": False,
-                },
+                _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
             )
         return steps
 
-    # ------------------------------------------------------------
-    # 3) LAYER EXPLORATION
-    # ------------------------------------------------------------
+    # 4) QUERY LAYER
     if _goal_is_layer_exploration(goal):
-        valid_query_steps = [
-            s for s in tool_steps if _step_has_required_query_layer_args(s)
-        ]
-        has_valid_query = len(valid_query_steps) > 0
+        valid_steps = [s for s in tool_steps if _step_has_required_query_layer_args(s)]
+        has_valid = len(valid_steps) > 0
 
-        if has_valid_query:
+        if has_valid:
             if _is_compact(profile):
                 return _keep_only_tools(steps, {"spatial.query_layer"})
-
             if _is_rich(profile):
                 if _goal_requests_general_context(goal):
                     return _prefer_primary_plus_optional(
@@ -439,87 +462,64 @@ def _apply_gis_goal_rules(
                         secondary={"spatial.context_pack"},
                     )
                 return _keep_only_tools(steps, {"spatial.query_layer"})
-
             if _goal_requests_general_context(goal) and not has_context_pack and bbox:
                 steps = _insert_before_final(
                     steps,
-                    {
-                        "type": "tool",
-                        "name": "spatial.context_pack",
-                        "args": {
-                            "bbox": bbox,
-                            "zoom": zoom,
-                            "profile": "rich",
-                        },
-                        "required": False,
-                    },
+                    _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
                 )
             return steps
 
-        inferred_query_layer = infer_query_layer(goal, gis_layers_catalog)
+        inferred_layer = infer_query_layer(goal, gis_layers_catalog)
 
-        query_step = {
+        new_step = {
             "type": "tool",
             "name": "spatial.query_layer",
             "args": {
-                "layer": inferred_query_layer,
+                "layer": inferred_layer,
                 "bbox": bbox,
                 "limit": 50,
             },
-            "required": bool(inferred_query_layer and _is_compact(profile)),
+            "required": bool(inferred_layer and _is_compact(profile)),
         }
 
         if _is_compact(profile):
-            if inferred_query_layer:
-                return [query_step, {"type": "final"}]
+            if inferred_layer:
+                return [new_step, {"type": "final"}]
             return steps
 
-        steps = _insert_before_final(steps, query_step)
-
+        steps = _insert_before_final(steps, new_step)
         if _goal_requests_general_context(goal) and not has_context_pack and bbox:
             steps = _insert_before_final(
                 steps,
-                {
-                    "type": "tool",
-                    "name": "spatial.context_pack",
-                    "args": {
-                        "bbox": bbox,
-                        "zoom": zoom,
-                        "profile": "rich",
-                    },
-                    "required": False,
-                },
+                _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
             )
         return steps
 
-    # ------------------------------------------------------------
-    # 4) GENERAL SUMMARY LAST
-    # ------------------------------------------------------------
+    # 5) SUMMARY
     if _goal_is_general_summary(goal):
-        if has_context_pack:
+        has_context_pack_step = any(
+            s.get("type") == "tool" and s.get("name") == "spatial.context_pack"
+            for s in tool_steps
+        )
+
+        if has_context_pack_step:
             if _is_compact(profile):
                 return _keep_only_tools(steps, {"spatial.context_pack"})
-
             if _is_rich(profile):
                 return _prefer_primary_plus_optional(
                     steps,
                     primary={"spatial.context_pack"},
                     secondary={"spatial.query_layer"},
                 )
-
             return steps
 
         if bbox:
-            context_step = {
-                "type": "tool",
-                "name": "spatial.context_pack",
-                "args": {
-                    "bbox": bbox,
-                    "zoom": zoom,
-                    "profile": "compact" if _is_compact(profile) else "rich",
-                },
-                "required": True,
-            }
+            context_step = _build_context_pack_step(
+                bbox=bbox,
+                zoom=zoom,
+                required=True,
+                profile="compact" if _is_compact(profile) else "rich",
+            )
 
             if _is_compact(profile):
                 return [context_step, {"type": "final"}]
@@ -527,6 +527,24 @@ def _apply_gis_goal_rules(
             return _insert_before_final(steps, context_step)
 
     return steps
+
+
+def _build_context_pack_step(
+    bbox: dict | None,
+    zoom: float | int | None,
+    required: bool,
+    profile: str = "rich",
+) -> dict:
+    return {
+        "type": "tool",
+        "name": "spatial.context_pack",
+        "args": {
+            "bbox": bbox,
+            "zoom": zoom,
+            "profile": profile,
+        },
+        "required": required,
+    }
 
 
 def _keep_only_tools(steps: list, allowed_tool_names: set[str]) -> list:
@@ -546,9 +564,6 @@ def _prefer_primary_plus_optional(
     primary: set[str],
     secondary: set[str],
 ) -> list:
-    """
-    Para perfiles intermedios: mantener tool principal y una secundaria útil.
-    """
     out = []
     kept_secondary = False
 
@@ -568,9 +583,6 @@ def _prefer_primary_plus_optional(
 
 
 def _remove_redundant_steps(steps: list) -> list:
-    """
-    Reglas simples de redundancia.
-    """
     has_context_pack = any(
         s.get("type") == "tool" and s.get("name") == "spatial.context_pack"
         for s in steps
@@ -589,76 +601,61 @@ def _remove_redundant_steps(steps: list) -> list:
 
 def _goal_is_general_summary(goal: str) -> bool:
     keywords = [
-        "resume",
-        "resumen",
-        "analiza",
-        "analizar",
-        "qué hay",
-        "que hay",
-        "qué existe",
-        "contexto espacial",
-        "trozo de mapa",
-        "elementos detectados",
-        "hazme un resumen",
-        "resumir",
+        "resume", "resumen", "analiza", "analizar",
+        "qué hay", "que hay", "qué existe",
+        "contexto espacial", "trozo de mapa",
+        "elementos detectados", "hazme un resumen", "resumir",
     ]
     return any(k in goal for k in keywords)
 
 
 def _goal_requests_general_context(goal: str) -> bool:
     keywords = [
-        "contexto",
-        "contexto general",
-        "resumen",
-        "resume",
-        "analiza también",
-        "explicando además el contexto",
-        "además del contexto",
-        "panorama general",
-        "visión general",
+        "contexto", "contexto general", "resumen", "resume",
+        "analiza también", "explicando además el contexto",
+        "además del contexto", "panorama general", "visión general",
     ]
     return any(k in goal for k in keywords)
 
 
 def _goal_is_nearby(goal: str) -> bool:
     keywords = [
-        "cerca",
-        "cercano",
-        "proximidad",
-        "alrededor",
-        "nearby",
-        "near",
+        "cerca", "cercano", "proximidad",
+        "alrededor", "nearby", "near",
     ]
     return any(k in goal for k in keywords)
 
 
 def _goal_is_intersection(goal: str) -> bool:
     keywords = [
-        "intersección",
-        "interseccion",
-        "intersecta",
-        "intersectan",
-        "dentro de",
-        "caen dentro",
-        "están dentro",
-        "estan dentro",
-        "solapan",
-        "solape",
-        "cruzan",
-        "cross",
-        "within",
-        "contains",
+        "intersección", "interseccion",
+        "intersecta", "intersectan",
+        "dentro de", "caen dentro",
+        "están dentro", "estan dentro",
+        "solapan", "solape",
+        "cruzan", "cross", "within", "contains",
     ]
     return any(k in goal for k in keywords)
 
 
 def _goal_is_layer_exploration(goal: str) -> bool:
     keywords = [
-        "explora la capa",
-        "explorar la capa",
-        "consulta la capa",
-        "query layer",
-        "ver la capa",
+        "explora la capa", "explorar la capa",
+        "consulta la capa", "query layer", "ver la capa",
+    ]
+    return any(k in goal for k in keywords)
+
+
+def _goal_is_network_trace(goal: str) -> bool:
+    keywords = [
+        "traza", "trace",
+        "camino", "path",
+        "ruta", "route",
+        "conecta", "conectar",
+        "conectividad",
+        "red", "network",
+        "segmentos que conectan",
+        "tramos que conectan",
     ]
     return any(k in goal for k in keywords)
 
@@ -671,6 +668,18 @@ def _bbox_center(bbox: dict | None) -> dict:
         "lon": (float(bbox["west"]) + float(bbox["east"])) / 2.0,
         "lat": (float(bbox["south"]) + float(bbox["north"])) / 2.0,
     }
+
+
+def _bbox_corner_start(bbox: dict | None) -> dict:
+    if not bbox:
+        return {"lon": 0.0, "lat": 0.0}
+    return {"lon": float(bbox["west"]), "lat": float(bbox["south"])}
+
+
+def _bbox_corner_end(bbox: dict | None) -> dict:
+    if not bbox:
+        return {"lon": 0.0, "lat": 0.0}
+    return {"lon": float(bbox["east"]), "lat": float(bbox["north"])}
 
 
 def _insert_before_final(steps: list, new_step: dict) -> list:

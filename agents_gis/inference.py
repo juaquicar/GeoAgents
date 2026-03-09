@@ -4,16 +4,25 @@ from typing import Any, Dict, List, Optional
 POINT_HINTS = [
     "point", "points", "pto", "ptos", "node", "nodes",
     "cpe", "cto", "ont", "device", "devices", "marker", "markers",
+    "punto", "puntos", "nodo", "nodos",
 ]
 
 POLYGON_HINTS = [
     "polygon", "polygons", "zona", "zonas", "area", "areas",
     "sector", "sectors", "parcel", "parcela", "parcelas",
+    "poligono", "poligonos", "polígono", "polígonos",
 ]
 
 LINE_HINTS = [
-    "line", "lines", "linea", "lineas", "segment", "segments",
-    "tramo", "tramos", "link", "links", "cable", "cables",
+    "line", "lines",
+    "linea", "lineas", "línea", "líneas",
+    "segment", "segments",
+    "tramo", "tramos",
+    "link", "links",
+    "cable", "cables",
+    "route", "routes",
+    "ruta", "rutas",
+    "red", "network",
 ]
 
 
@@ -85,14 +94,42 @@ def infer_nearby_layer(
     goal: str,
     gis_layers_catalog: List[Dict[str, Any]],
 ) -> Optional[str]:
-    """
-    Para nearby, por defecto preferimos capas de puntos.
-    """
     goal = (goal or "").lower()
 
-    best_point = find_best_point_layer(gis_layers_catalog)
-    if best_point:
-        return best_point
+    point_terms = [
+        "punto", "puntos", "point", "points", "nodo", "nodos",
+        "cto", "cpe", "ont", "dispositivo", "dispositivos",
+    ]
+    line_terms = [
+        "linea", "línea", "lineas", "líneas", "line", "lines",
+        "tramo", "tramos", "segmento", "segmentos",
+        "cable", "cables", "ruta", "rutas",
+    ]
+    polygon_terms = [
+        "zona", "zonas", "area", "areas", "poligono", "polígono",
+        "poligonos", "polígonos", "polygon", "polygons",
+        "sector", "sectores", "parcela", "parcelas",
+    ]
+
+    if any(term in goal for term in point_terms):
+        layer = find_best_point_layer(gis_layers_catalog)
+        if layer:
+            return layer
+
+    if any(term in goal for term in line_terms):
+        layer = find_best_line_layer(gis_layers_catalog)
+        if layer:
+            return layer
+
+    if any(term in goal for term in polygon_terms):
+        layer = find_best_polygon_layer(gis_layers_catalog)
+        if layer:
+            return layer
+
+    for finder in (find_best_point_layer, find_best_line_layer, find_best_polygon_layer):
+        layer = finder(gis_layers_catalog)
+        if layer:
+            return layer
 
     if gis_layers_catalog:
         return gis_layers_catalog[0].get("name")
@@ -104,53 +141,39 @@ def infer_intersection_layers(
     goal: str,
     gis_layers_catalog: List[Dict[str, Any]],
 ) -> Dict[str, Optional[str]]:
-    """
-    Para intersects:
-    - intenta detectar el tipo de geometría mencionado en el goal
-    - permite combinaciones punto/polígono, línea/polígono y punto/línea
-    - fallback conservador: punto -> polígono
-    """
     goal = (goal or "").lower()
-
-    point_layer = find_best_point_layer(gis_layers_catalog)
-    line_layer = find_best_line_layer(gis_layers_catalog)
-    polygon_layer = find_best_polygon_layer(gis_layers_catalog)
 
     point_terms = [
         "punto", "puntos", "point", "points", "nodo", "nodos",
-        "cto", "cpe", "ont", "dispositivo", "dispositivos",
     ]
     line_terms = [
         "linea", "línea", "lineas", "líneas", "line", "lines",
         "tramo", "tramos", "segmento", "segmentos", "cable", "cables",
     ]
     polygon_terms = [
-        "zona", "zonas", "area", "areas", "poligono", "poligonos", "polígonos",
+        "zona", "zonas", "area", "areas", "poligono", "polígono",
         "polygon", "polygons", "sector", "sectores", "parcela", "parcelas",
     ]
 
-    has_point_terms = any(term in goal for term in point_terms)
-    has_line_terms = any(term in goal for term in line_terms)
-    has_polygon_terms = any(term in goal for term in polygon_terms)
+    source_layer = None
+    target_layer = None
 
-    source_layer = point_layer
-    target_layer = polygon_layer
+    has_points = any(term in goal for term in point_terms)
+    has_lines = any(term in goal for term in line_terms)
+    has_polygons = any(term in goal for term in polygon_terms)
 
-    if has_line_terms and has_polygon_terms and line_layer and polygon_layer:
-        source_layer = line_layer
-        target_layer = polygon_layer
-    elif has_point_terms and has_polygon_terms and point_layer and polygon_layer:
-        source_layer = point_layer
-        target_layer = polygon_layer
-    elif has_point_terms and has_line_terms:
-        source_layer = point_layer or line_layer
-        target_layer = line_layer or point_layer
-    elif has_line_terms and line_layer:
-        source_layer = line_layer
-        target_layer = polygon_layer or point_layer
-    elif has_polygon_terms and polygon_layer:
-        source_layer = point_layer or line_layer
-        target_layer = polygon_layer
+    if has_lines and has_polygons:
+        source_layer = find_best_line_layer(gis_layers_catalog)
+        target_layer = find_best_polygon_layer(gis_layers_catalog)
+    elif has_points and has_lines:
+        source_layer = find_best_point_layer(gis_layers_catalog)
+        target_layer = find_best_line_layer(gis_layers_catalog)
+    elif has_points and has_polygons:
+        source_layer = find_best_point_layer(gis_layers_catalog)
+        target_layer = find_best_polygon_layer(gis_layers_catalog)
+    else:
+        source_layer = find_best_point_layer(gis_layers_catalog)
+        target_layer = find_best_polygon_layer(gis_layers_catalog)
 
     if source_layer and target_layer and source_layer == target_layer:
         target_layer = None
@@ -165,14 +188,6 @@ def infer_query_layer(
     goal: str,
     gis_layers_catalog: List[Dict[str, Any]],
 ) -> Optional[str]:
-    """
-    Intenta inferir la mejor capa para spatial.query_layer a partir del goal.
-    Reglas:
-    - si el goal parece hablar de puntos -> capa de puntos
-    - si habla de zonas/polígonos -> capa poligonal
-    - si habla de líneas/tramos -> capa lineal
-    - si no hay pistas, prioriza punto, luego polígono, luego línea
-    """
     goal = (goal or "").lower()
 
     point_terms = [
@@ -180,12 +195,15 @@ def infer_query_layer(
         "cto", "cpe", "ont", "dispositivo", "dispositivos",
     ]
     polygon_terms = [
-        "zona", "zonas", "area", "areas", "poligono", "polígonos",
-        "polygon", "polygons", "sector", "sectores", "parcela", "parcelas",
+        "zona", "zonas", "area", "areas", "poligono", "polígono",
+        "poligonos", "polígonos", "polygon", "polygons",
+        "sector", "sectores", "parcela", "parcelas",
     ]
     line_terms = [
         "linea", "línea", "lineas", "líneas", "line", "lines",
-        "tramo", "tramos", "segmento", "segmentos", "cable", "cables",
+        "tramo", "tramos", "segmento", "segmentos",
+        "cable", "cables", "ruta", "rutas",
+        "red", "network",
     ]
 
     if any(term in goal for term in point_terms):
@@ -203,7 +221,6 @@ def infer_query_layer(
         if layer:
             return layer
 
-    # fallback general
     for finder in (find_best_point_layer, find_best_polygon_layer, find_best_line_layer):
         layer = finder(gis_layers_catalog)
         if layer:
@@ -213,3 +230,30 @@ def infer_query_layer(
         return gis_layers_catalog[0].get("name")
 
     return None
+
+
+def infer_network_layer(
+    goal: str,
+    gis_layers_catalog: List[Dict[str, Any]],
+) -> Optional[str]:
+    goal = (goal or "").lower()
+
+    network_terms = [
+        "red", "network",
+        "traza", "trace",
+        "camino", "path",
+        "ruta", "route",
+        "conecta", "connect",
+        "conectividad",
+        "segmento", "segmentos",
+        "tramo", "tramos",
+        "linea", "lineas", "línea", "líneas",
+        "cable", "cables",
+    ]
+
+    if any(term in goal for term in network_terms):
+        layer = find_best_line_layer(gis_layers_catalog)
+        if layer:
+            return layer
+
+    return find_best_line_layer(gis_layers_catalog)
