@@ -105,14 +105,52 @@ def infer_intersection_layers(
     gis_layers_catalog: List[Dict[str, Any]],
 ) -> Dict[str, Optional[str]]:
     """
-    Para intersects, por defecto:
-    - source_layer -> capa de puntos
-    - target_layer -> capa de polígonos
+    Para intersects:
+    - intenta detectar el tipo de geometría mencionado en el goal
+    - permite combinaciones punto/polígono, línea/polígono y punto/línea
+    - fallback conservador: punto -> polígono
     """
     goal = (goal or "").lower()
 
-    source_layer = find_best_point_layer(gis_layers_catalog)
-    target_layer = find_best_polygon_layer(gis_layers_catalog)
+    point_layer = find_best_point_layer(gis_layers_catalog)
+    line_layer = find_best_line_layer(gis_layers_catalog)
+    polygon_layer = find_best_polygon_layer(gis_layers_catalog)
+
+    point_terms = [
+        "punto", "puntos", "point", "points", "nodo", "nodos",
+        "cto", "cpe", "ont", "dispositivo", "dispositivos",
+    ]
+    line_terms = [
+        "linea", "línea", "lineas", "líneas", "line", "lines",
+        "tramo", "tramos", "segmento", "segmentos", "cable", "cables",
+    ]
+    polygon_terms = [
+        "zona", "zonas", "area", "areas", "poligono", "poligonos", "polígonos",
+        "polygon", "polygons", "sector", "sectores", "parcela", "parcelas",
+    ]
+
+    has_point_terms = any(term in goal for term in point_terms)
+    has_line_terms = any(term in goal for term in line_terms)
+    has_polygon_terms = any(term in goal for term in polygon_terms)
+
+    source_layer = point_layer
+    target_layer = polygon_layer
+
+    if has_line_terms and has_polygon_terms and line_layer and polygon_layer:
+        source_layer = line_layer
+        target_layer = polygon_layer
+    elif has_point_terms and has_polygon_terms and point_layer and polygon_layer:
+        source_layer = point_layer
+        target_layer = polygon_layer
+    elif has_point_terms and has_line_terms:
+        source_layer = point_layer or line_layer
+        target_layer = line_layer or point_layer
+    elif has_line_terms and line_layer:
+        source_layer = line_layer
+        target_layer = polygon_layer or point_layer
+    elif has_polygon_terms and polygon_layer:
+        source_layer = point_layer or line_layer
+        target_layer = polygon_layer
 
     if source_layer and target_layer and source_layer == target_layer:
         target_layer = None
