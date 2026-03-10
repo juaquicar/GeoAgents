@@ -155,7 +155,8 @@ AGENTS_GIS_LAYERS = [
         "geom_col": "the_geom",
         "id_col": "id",
         "fields": ["name"],
-        "filter_fields": ["name"],   # <- nuevo
+        "filter_fields": ["name"],
+        "geometry_kind": "point",
     },
     {
         "name": "demo_polygons",
@@ -164,6 +165,16 @@ AGENTS_GIS_LAYERS = [
         "id_col": "id",
         "fields": ["name"],
         "filter_fields": ["name"],
+        "geometry_kind": "polygon",
+    },
+    {
+        "name": "demo_lines",
+        "table": "demo_lines",
+        "geom_col": "the_geom",
+        "id_col": "id",
+        "fields": ["name"],
+        "filter_fields": ["name"],
+        "geometry_kind": "line",
     },
 ]
 

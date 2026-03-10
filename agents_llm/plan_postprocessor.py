@@ -116,24 +116,28 @@ def _inject_gis_inference(
 ) -> dict:
     args = deepcopy(args or {})
     gis_layers_catalog = gis_layers_catalog or []
+    valid_layer_names = {layer.get("name") for layer in gis_layers_catalog}
+
+    def _is_valid_layer(name: str | None) -> bool:
+        return bool(name) and name in valid_layer_names
 
     if tool_name == "spatial.intersects":
         inferred = infer_intersection_layers(goal, gis_layers_catalog)
-        if not args.get("source_layer"):
+        if not _is_valid_layer(args.get("source_layer")):
             args["source_layer"] = inferred.get("source_layer")
-        if not args.get("target_layer"):
+        if not _is_valid_layer(args.get("target_layer")):
             args["target_layer"] = inferred.get("target_layer")
 
     elif tool_name == "spatial.nearby":
-        if not args.get("layer"):
+        if not _is_valid_layer(args.get("layer")):
             args["layer"] = infer_nearby_layer(goal, gis_layers_catalog)
 
     elif tool_name == "spatial.query_layer":
-        if not args.get("layer"):
+        if not _is_valid_layer(args.get("layer")):
             args["layer"] = infer_query_layer(goal, gis_layers_catalog)
 
     elif tool_name == "spatial.network_trace":
-        if not args.get("layer"):
+        if not _is_valid_layer(args.get("layer")):
             args["layer"] = infer_network_layer(goal, gis_layers_catalog)
 
     return args
