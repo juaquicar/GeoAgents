@@ -1,266 +1,95 @@
 # GeoAgents Architecture
 
-GeoAgents es un **framework de agentes de inteligencia artificial especializados en análisis geoespacial (GIS)**.
+GeoAgents es un framework de agentes para análisis geoespacial con dos principios clave:
 
-El objetivo del framework es permitir que agentes IA puedan:
-
-- interpretar preguntas espaciales
-- seleccionar herramientas GIS automáticamente
-- ejecutar análisis espaciales
-- sintetizar resultados en lenguaje natural
-
-El framework está diseñado para ser:
-
-- modular
-- reproducible
-- seguro
-- extensible
+- **razonamiento controlado** (LLM planifica, pero no ejecuta directamente)
+- **ejecución determinista y auditable** (tools tipadas + registro de pasos)
 
 ---
 
-# Arquitectura general
+# Flujo general
 
-El flujo completo de ejecución es:
+Actualmente el `Runner` soporta dos modos:
 
-```
-
-User request
-│
-▼
-Planner (LLM reasoning)
-│
-▼
-Plan validation
-│
-▼
-Plan postprocessing
-│
-▼
-Execution engine
-│
-▼
-Facts extraction
-│
-▼
-Synthesizer (LLM explanation)
-
-```
+1. **Modo directo**: `input_json.tool_call` → valida allowlist → ejecuta 1 tool.
+2. **Modo planificado**: `input_json.goal` → planner/postprocessor → ejecuta plan multi-step → sintetiza.
 
 ---
 
-# Componentes principales
+# Componentes
 
-El framework se divide en dos módulos principales.
+## `agents_core`
 
-```
+Contiene modelos y orquestación principal:
 
-agents_core
-agents_gis
+- `Agent`: prompt, perfil (`compact|rich|investigate`) y `tool_allowlist`
+- `Run`: estado, entrada/salida, texto final, errores y timestamps
+- `RunStep`: traza cronológica de ejecución (`idx`, `kind`, `name`, `latency_ms`, `error`)
+- `runner.execute_run`: coordina modos de ejecución, dependencias y políticas de fallo
 
-```
+### Novedades relevantes del runner
+
+- Soporte de **steps con `id`** para enlazar resultados entre pasos.
+- Resolución de referencias en args con patrón **`$step:<id>.<path>`**.
+- Dependencias explícitas con **`depends_on`**.
+- Política de error por step con **`on_fail`** (`abort` / `continue`).
+- Límite de seguridad de tools por plan (`AGENTS_MAX_PLANNER_TOOL_STEPS`).
+
+## `agents_llm`
+
+- `planner.py`: crea plan JSON usando catálogo de tools + catálogo GIS.
+- `plan_postprocessor.py`: normaliza estructura y aplica heurísticas.
+- `synthesizer.py`: genera respuesta final basada en `step_outputs` reales.
+
+## `agents_tools`
+
+- `registry.py`: registro central de tools disponibles.
+- `executor.py`: valida args, ejecuta tool y registra `RunStep(kind="tool")`.
+- `introspection.py`: expone catálogo serializable para planner y API.
+
+## `agents_gis`
+
+Implementa tools y soporte GIS:
+
+- `spatial.summary`
+- `spatial.context_pack`
+- `spatial.query_layer`
+- `spatial.nearby`
+- `spatial.intersects`
+- `spatial.network_trace`
+
+También mantiene inferencia de capas y catálogo GIS para restringir planes a capas válidas.
 
 ---
 
-# agents_core
+# Modelo de plan (actual)
 
-Contiene el motor de agentes.
-
-```
-
-agents_core
-│
-├── planner.py
-├── validator.py
-├── plan_postprocessor.py
-├── execution_engine.py
-├── synthesizer.py
-└── runner.py
-
-````
-
-### planner
-
-Responsable de convertir una pregunta en un plan estructurado.
-
-Ejemplo de plan:
+Un plan puede contener steps de tool con metadatos de ejecución:
 
 ```json
 {
   "steps": [
     {
+      "id": "s1",
       "type": "tool",
-      "name": "spatial.intersects"
+      "name": "spatial.query_layer",
+      "required": true,
+      "hypothesis": "La capa contiene puntos en el bbox",
+      "depends_on": [],
+      "on_fail": "abort",
+      "args": {"layer": "demo_points", "bbox": {"west": -6.06}}
     },
-    {
-      "type": "final"
-    }
+    { "type": "final" }
   ]
 }
-````
-
-El planner **no ejecuta nada**.
-
-Solo decide qué herramientas usar.
-
----
-
-### validator
-
-Comprueba que el plan generado por el LLM sea válido.
-
-Verifica:
-
-* estructura JSON correcta
-* tools permitidas
-* tipos de pasos válidos
-
----
-
-### plan_postprocessor
-
-Es uno de los componentes clave.
-
-Responsabilidades:
-
-* completar parámetros faltantes
-* inferir capas GIS automáticamente
-* aplicar heurísticas espaciales
-* eliminar pasos redundantes
-* adaptar el plan según el perfil del agente
-
----
-
-### execution_engine
-
-Ejecuta las herramientas del plan.
-
-Flujo:
-
-```
-for step in plan:
-    ejecutar tool
-    guardar resultados
-```
-
-Cada tool devuelve:
-
-```
-result
-facts
 ```
 
 ---
 
-### synthesizer
+# Observabilidad
 
-Genera la respuesta final en lenguaje natural.
+Cada run queda trazado en `RunStep` (sistema, llm, tool, result), lo que permite:
 
-Utiliza:
-
-* los facts de cada tool
-* el contexto del run
-* el objetivo del usuario
-
-Produce:
-
-```
-final_text
-```
-
----
-
-### runner
-
-Coordina todo el flujo:
-
-```
-planner
-→ validator
-→ postprocessor
-→ execution
-→ synthesizer
-```
-
-También guarda el resultado en el modelo `Run`.
-
----
-
-# agents_gis
-
-Contiene lógica específica GIS.
-
-```
-agents_gis
-│
-├── inference.py
-├── tools/
-└── catalog/
-```
-
----
-
-### inference
-
-Responsable de inferir capas GIS automáticamente.
-
-Ejemplos:
-
-```
-infer_intersection_layers
-infer_nearby_layer
-infer_query_layer
-```
-
----
-
-# GIS Layer Catalog
-
-GeoAgents utiliza un catálogo de capas.
-
-Ejemplo:
-
-```
-[
-  {
-    "name": "demo_points",
-    "table": "demo_points",
-    "geometry": "POINT"
-  },
-  {
-    "name": "demo_polygons",
-    "table": "demo_polygons",
-    "geometry": "POLYGON"
-  }
-]
-```
-
-Este catálogo permite:
-
-* inferencia automática
-* validación
-* evitar errores del LLM
-
----
-
-# Run lifecycle
-
-Cada ejecución se guarda como un `Run`.
-
-Contiene:
-
-```
-input
-plan
-tool_results
-facts
-final_text
-```
-
-Esto permite:
-
-* debugging
-* auditoría
-* reproducibilidad
-
-
-
+- depuración de errores por paso
+- auditoría de decisiones del planner
+- métricas de latencia por tool

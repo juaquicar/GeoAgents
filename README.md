@@ -110,7 +110,7 @@ Full diagrams available here:
 
 ```
 
-docs/framework_diagrams.md
+docs/diagrams.md
 
 ```
 

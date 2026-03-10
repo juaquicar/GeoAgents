@@ -1,23 +1,10 @@
 # GeoAgents Usage Guide
 
-Esta guía explica cómo:
-
-- crear agentes
-- ejecutar runs
-- usar tools
-- extender el framework
+Guía práctica actualizada para crear agentes y ejecutar runs con el flujo nuevo.
 
 ---
 
-# Crear un agente
-
-Ejemplo en Django shell:
-
-````
-
-python manage.py shell
-
-````
+## 1) Crear un agente
 
 ```python
 from agents_core.models import Agent
@@ -27,19 +14,18 @@ agent = Agent.objects.create(
     system_prompt="Eres un experto en análisis espacial.",
     profile="rich",
     tool_allowlist=[
-        "spatial.intersects",
-        "spatial.nearby",
+        "spatial.summary",
+        "spatial.context_pack",
         "spatial.query_layer",
-        "spatial.context_pack"
+        "spatial.nearby",
+        "spatial.intersects",
     ],
 )
-````
+```
 
 ---
 
-# Ejecutar un run
-
-Ejemplo:
+## 2) Crear y ejecutar un run (modo planner)
 
 ```python
 from agents_core.models import Run
@@ -50,95 +36,79 @@ run = Run.objects.create(
     input_json={
         "goal": "Comprueba si los puntos están dentro de las zonas",
         "map_context": {
-            "bbox": {...},
-            "zoom": 18
-        }
-    }
+            "bbox": {
+                "west": -6.06,
+                "south": 37.32,
+                "east": -6.05,
+                "north": 37.33,
+            },
+            "zoom": 18,
+        },
+    },
 )
 
 execute_run(run)
+print(run.status, run.final_text)
 ```
 
 ---
 
-# Resultado
+## 3) Ejecutar un tool_call directo
 
-Después de ejecutar:
+Útil para pruebas puntuales sin planificación LLM.
 
-```
-run.final_text
-```
+```python
+run = Run.objects.create(
+    agent=agent,
+    input_json={
+        "tool_call": {
+            "name": "spatial.query_layer",
+            "args": {"layer": "demo_points", "limit": 10},
+        }
+    },
+)
 
-contendrá la respuesta del agente.
-
----
-
-# Ejecutar tests
-
-El proyecto incluye `test.py`.
-
-Ejecutar:
-
-```
-python test.py
-```
-
-El script prueba múltiples escenarios:
-
-```
-intersects
-nearby
-query_layer
-context_pack
-```
-
-y compara perfiles.
-
----
-
-# Extender el sistema
-
-Para añadir nueva funcionalidad:
-
-### nueva tool
-
-```
-agents_gis/tools
-```
-
-### nuevas heurísticas
-
-```
-plan_postprocessor.py
-```
-
-### nuevas inferencias
-
-```
-agents_gis/inference.py
+execute_run(run)
+print(run.output_json)
 ```
 
 ---
 
-# Buenas prácticas
+## 4) Entender planes multi-step
 
-1️⃣ limitar tools por agente
+El planner puede devolver:
 
-2️⃣ usar postprocessor para completar args
+- `id` por step
+- `depends_on` para dependencias
+- `hypothesis` como hipótesis verificable
+- `on_fail` para controlar continuidad (`abort|continue`)
+- referencias `$step:<id>.<path>` en args
 
-3️⃣ mantener tools deterministas
+Ejemplo de referencia:
 
-4️⃣ usar facts estructurados
+```json
+{
+  "id": "s2",
+  "type": "tool",
+  "name": "spatial.nearby",
+  "depends_on": ["s1"],
+  "args": {
+    "point": "$step:s1.data.items.0.centroid",
+    "radius_m": 100,
+    "layer": "demo_points"
+  }
+}
+```
 
 ---
 
-# Roadmap
+## 5) Trazabilidad y depuración
 
-Futuras mejoras posibles:
+Cada ejecución registra pasos en `RunStep`:
 
-* soporte raster
-* reasoning multi-step
-* memoria de runs
-* análisis 3D
-* routing espacial
+- `system`: inicio/fin
+- `llm`: planificación y síntesis
+- `tool`: llamadas reales a herramientas
+- `result`: consolidación de output
 
+Puedes inspeccionarlo por API en `GET /api/runs/{id}/steps/`.
