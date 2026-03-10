@@ -27,6 +27,12 @@ Reglas generales:
 - El último step debe ser {"type": "final"}.
 - En los steps de type="tool", puedes incluir "required": true o false.
 - Si no estás seguro de que un step sea imprescindible, usa "required": false.
+- Cada step de type="tool" debe incluir un "id" único y corto (ej: "s1", "s2").
+- Puedes incluir "hypothesis" en cada tool step: una hipótesis verificable en lenguaje natural.
+- Puedes incluir "depends_on" (lista de ids de steps previos) para declarar dependencias explícitas.
+- Puedes incluir "on_fail" con valores "abort" o "continue" para controlar ejecución.
+- Si una herramienta necesita datos de un step anterior, referencia args con el patrón
+  "$step:<step_id>.<campo>", por ejemplo "$step:s1.data.features".
 
 Reglas de contexto:
 - Si una tool requiere bbox y existe map_context.bbox, debes incluirlo en args.
@@ -156,15 +162,43 @@ def validate_plan(plan: dict) -> dict:
             raise ValueError(f"Planner step {i} has invalid type: {step_type}")
 
         if step_type == "tool":
+            if not step.get("id"):
+                step["id"] = f"s{i+1}"
             if not step.get("name"):
                 raise ValueError(f"Planner tool step {i} missing name")
             if "args" not in step:
                 step["args"] = {}
             if "required" not in step:
                 step["required"] = True
+            if "depends_on" not in step:
+                step["depends_on"] = []
+            if not isinstance(step.get("depends_on"), list):
+                raise ValueError(f"Planner tool step {i} has invalid depends_on")
+            if "on_fail" not in step:
+                step["on_fail"] = "abort" if step["required"] else "continue"
+            if step.get("on_fail") not in {"abort", "continue"}:
+                raise ValueError(f"Planner tool step {i} has invalid on_fail")
 
         if step_type == "final":
             step.pop("required", None)
+            step.pop("depends_on", None)
+            step.pop("on_fail", None)
+
+    tool_step_ids = [s.get("id") for s in steps if s.get("type") == "tool"]
+    if len(tool_step_ids) != len(set(tool_step_ids)):
+        raise ValueError("Planner tool steps must have unique id")
+
+    seen_ids = set()
+    for i, step in enumerate(steps):
+        if step.get("type") != "tool":
+            continue
+        step_id = step.get("id")
+        for dep in step.get("depends_on", []):
+            if dep not in seen_ids:
+                raise ValueError(
+                    f"Planner step {i} depends on unknown or future step id: {dep}"
+                )
+        seen_ids.add(step_id)
 
     if steps[-1].get("type") != "final":
         raise ValueError("Planner must end with a final step")

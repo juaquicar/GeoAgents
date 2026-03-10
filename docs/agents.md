@@ -118,3 +118,31 @@ Agent.objects.create(
 )
 ```
 
+
+
+# Fase 1: Agente de verdad
+
+GeoAgents incorpora capacidades para un ciclo de ejecución más robusto:
+
+- **Multi-tool reasoning**: el planificador puede proponer múltiples tools con orden explícito.
+- **Hipótesis verificables**: cada paso de tool puede incluir `hypothesis` para validar lo que se espera comprobar.
+- **Referencias entre pasos**: los argumentos aceptan referencias del tipo `$step:s1.data.features.0.centroid`.
+- **Control de ejecución**: cada paso puede definir `depends_on` y `on_fail` (`abort` / `continue`).
+
+Ejemplo de step:
+
+```json
+{
+  "id": "s2",
+  "type": "tool",
+  "name": "spatial.nearby",
+  "depends_on": ["s1"],
+  "hypothesis": "Hay puntos cercanos al centro detectado en s1",
+  "on_fail": "continue",
+  "args": {
+    "layer": "demo_points",
+    "point": "$step:s1.data.features.0.centroid",
+    "radius_m": 100
+  }
+}
+```
