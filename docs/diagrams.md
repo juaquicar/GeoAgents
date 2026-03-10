@@ -1,48 +1,45 @@
 # GeoAgents Framework Diagrams
 
-Este documento describe visualmente la arquitectura de **GeoAgents**.
+Este documento describe visualmente la arquitectura actual de **GeoAgents** y los cambios recientes del runner:
 
-Los diagramas están escritos en **Mermaid**, lo que permite renderizado automático en GitHub y sistemas de documentación.
+- ejecución en dos modos (`tool_call` directo y `goal` + planner)
+- planes multi-step con `id`, `depends_on`, `hypothesis`, `on_fail`
+- referencias entre pasos (`$step:<id>.<path>`)
+- trazabilidad completa vía `RunStep`
 
 ---
 
 # Arquitectura completa del framework
 
-Este diagrama muestra todos los componentes principales.
-
 ```mermaid
 flowchart TD
 
-A[User / Client] --> B[GeoAgents API]
+U[User / Client] --> API[GeoAgents API]
 
-B --> C[Runner]
+API --> RC[agents_core]
+RC --> RUNNER[Runner]
 
-C --> D[Planner LLM]
-D --> E[Plan Validator]
+RUNNER --> M1{Modo de ejecución}
+M1 -->|tool_call| TOOLX[Tool Executor]
+M1 -->|goal| PLAN[Planner LLM]
 
-E --> F[Plan Postprocessor]
+PLAN --> POST[Plan Postprocessor]
+POST --> EXEC[Execution Loop]
 
-F --> G[Execution Engine]
+EXEC --> REG[Tool Registry]
+REG --> GIS[GIS Tools]
+GIS --> OUT[Step Outputs]
 
-G --> H[GIS Tools]
+OUT --> SYN[Synthesizer LLM]
+SYN --> RESP[Final Response]
 
-H --> I[Tool Results]
-I --> J[Facts Extraction]
-
-J --> K[Synthesizer LLM]
-
-K --> L[Final Response]
-
-C --> M[(Run Database)]
-
-M --> L
-````
+RUNNER --> DB[(Run / RunStep DB)]
+DB --> RESP
+```
 
 ---
 
-# Pipeline de ejecución
-
-Este diagrama muestra el **pipeline interno de un run**.
+# Pipeline de ejecución (goal + planner)
 
 ```mermaid
 sequenceDiagram
@@ -51,306 +48,82 @@ participant User
 participant API
 participant Runner
 participant Planner
-participant Validator
 participant Postprocessor
-participant Engine
+participant Executor
 participant Tools
 participant Synthesizer
+participant DB
 
-User->>API: POST /agents/{id}/run
-API->>Runner: create Run
-
-Runner->>Planner: generate_plan(goal)
-
+User->>API: POST /api/runs/ (input_json.goal)
+API->>Runner: execute(run)
+Runner->>Planner: plan_run(goal, catalogs)
 Planner-->>Runner: raw_plan
-
-Runner->>Validator: validate_plan
-Validator-->>Runner: validated_plan
-
-Runner->>Postprocessor: normalize_plan
+Runner->>Postprocessor: normalize_plan(raw_plan)
 Postprocessor-->>Runner: normalized_plan
 
-Runner->>Engine: execute_plan
+loop Cada step del plan
+  Runner->>Executor: invoke_tool(step)
+  Executor->>Tools: validate + invoke
+  Tools-->>Executor: ToolResult
+  Executor-->>Runner: {ok,data,error}
+  Runner->>DB: log_step(kind=tool)
+end
 
-Engine->>Tools: run tool
-Tools-->>Engine: results
-
-Engine-->>Runner: tool_results
-
-Runner->>Synthesizer: build_final_text
-
+Runner->>Synthesizer: synthesize_run(goal, plan, outputs)
 Synthesizer-->>Runner: final_text
-
-Runner-->>API: run completed
-
-API-->>User: response
+Runner->>DB: persist output_json + final_text
+Runner-->>API: run succeeded/failed
+API-->>User: run payload
 ```
 
 ---
 
-# Planner → Tools interaction
-
-Este diagrama explica cómo el **planner decide qué tools usar**.
-
-```mermaid
-flowchart TD
-
-A[User Goal]
-
-A --> B[Planner LLM]
-
-B --> C{Which spatial task?}
-
-C -->|Intersection| D[spatial.intersects]
-
-C -->|Nearby search| E[spatial.nearby]
-
-C -->|Layer exploration| F[spatial.query_layer]
-
-C -->|General spatial context| G[spatial.context_pack]
-
-D --> H[Execution Engine]
-E --> H
-F --> H
-G --> H
-```
-
----
-
-# Arquitectura interna del Agent
-
-Este diagrama muestra los componentes de un agente.
-
-```mermaid
-flowchart TD
-
-Agent[Agent]
-
-Agent --> Prompt[System Prompt]
-
-Agent --> Profile[Agent Profile]
-
-Agent --> Tools[Tool Allowlist]
-
-Profile --> Compact
-Profile --> Rich
-Profile --> Investigate
-```
-
-Los perfiles modifican el comportamiento del postprocessor.
-
----
-
-# Plan Postprocessor Logic
-
-Este diagrama explica el papel del **postprocessor**, que es una de las piezas clave del framework.
-
-```mermaid
-flowchart TD
-
-RawPlan[Planner Output]
-
-RawPlan --> Validate[Plan Validation]
-
-Validate --> InjectContext[Inject Map Context]
-
-InjectContext --> InferLayers[Infer GIS Layers]
-
-InferLayers --> NormalizeArgs[Normalize Tool Args]
-
-NormalizeArgs --> ApplyRules[Apply Goal Rules]
-
-ApplyRules --> RemoveRedundancy[Remove Redundant Steps]
-
-RemoveRedundancy --> FinalPlan[Normalized Plan]
-```
-
----
-
-# GIS Layer Inference
-
-El sistema puede inferir capas automáticamente.
-
-```mermaid
-flowchart TD
-
-Goal[User Goal]
-
-Goal --> DetectKeywords
-
-DetectKeywords -->|points| PointLayer
-DetectKeywords -->|zones| PolygonLayer
-DetectKeywords -->|lines| LineLayer
-
-PointLayer --> LayerCatalog
-PolygonLayer --> LayerCatalog
-LineLayer --> LayerCatalog
-
-LayerCatalog --> SelectedLayer
-```
-
-Esto permite que el agente **no tenga que conocer los nombres exactos de las capas**.
-
----
-
-# Tool Execution Engine
-
-El execution engine ejecuta los pasos del plan.
-
-```mermaid
-flowchart TD
-
-Plan[Normalized Plan]
-
-Plan --> Step1
-Step1 --> Tool1[Execute Tool]
-
-Tool1 --> Result1
-
-Result1 --> Facts1
-
-Facts1 --> NextStep
-
-NextStep --> Tool2
-
-Tool2 --> Result2
-
-Result2 --> Facts2
-
-Facts2 --> Synthesizer
-```
-
----
-
-# Synthesizer Architecture
-
-El synthesizer convierte los resultados en texto.
-
-```mermaid
-flowchart TD
-
-ToolResults --> Facts
-
-Facts --> Context
-
-Context --> LLM
-
-LLM --> Response
-
-Response --> FinalText
-```
-
-El synthesizer utiliza:
-
-* facts estructurados
-* resultados de tools
-* el goal original
-
----
-
-# Component Map (similar a frameworks OSS)
-
-Este diagrama muestra la arquitectura del framework como sistema modular.
+# Pipeline alternativo (tool_call directo)
 
 ```mermaid
 flowchart LR
 
-subgraph Client
-A[Web App]
-B[GIS Viewer]
-C[API Client]
-end
-
-subgraph GeoAgents
-D[API Layer]
-E[Runner]
-F[Planner]
-G[Validator]
-H[Postprocessor]
-I[Execution Engine]
-J[Synthesizer]
-end
-
-subgraph GIS
-K[Layer Catalog]
-L[GIS Tools]
-M[PostGIS]
-end
-
-A --> D
-B --> D
-C --> D
-
-D --> E
-
-E --> F
-E --> G
-E --> H
-E --> I
-E --> J
-
-I --> L
-L --> M
-
-H --> K
+A[input_json.tool_call] --> B[Runner]
+B --> C[Validate allowlist]
+C --> D[Tool Executor]
+D --> E[ToolResult]
+E --> F[Persist result in Run]
+F --> G[run.end]
 ```
 
 ---
 
-# Conceptual Comparison
-
-GeoAgents se sitúa en la siguiente categoría de frameworks.
-
-```mermaid
-flowchart LR
-
-LangChain --> Agents
-LlamaIndex --> RetrievalAgents
-Haystack --> NLPipelines
-
-GeoAgents --> SpatialAgents
-
-SpatialAgents --> GISAnalysis
-SpatialAgents --> SpatialTools
-SpatialAgents --> GeospatialReasoning
-```
-
-GeoAgents introduce **razonamiento geoespacial estructurado**.
-
----
-
-# Resumen conceptual
+# Plan multi-step y dependencias
 
 ```mermaid
 flowchart TD
 
-Goal[User Goal]
+S1[s1: spatial.query_layer]\nrequired=true --> S2[s2: spatial.nearby]\ndepends_on=[s1]
+S2 --> S3[s3: spatial.intersects]\ndepends_on=[s1,s2]
+S3 --> F[final]
 
-Goal --> Reasoning[Planner Reasoning]
-
-Reasoning --> Plan
-
-Plan --> Execution
-
-Execution --> SpatialAnalysis
-
-SpatialAnalysis --> Facts
-
-Facts --> Explanation
-
-Explanation --> FinalAnswer
+R1[args usa $step:s1.data...] --> S2
+R2[on_fail=continue/abort] --> S2
+R3[hypothesis] --> S2
 ```
 
 ---
 
-# Conclusión
+# Trazabilidad de ejecución (RunStep)
 
-GeoAgents combina:
+```mermaid
+flowchart TD
 
-* agentes IA
-* herramientas GIS
-* inferencia espacial
-* síntesis explicativa
+RUN[Run] --> STEP1[run.start]
+STEP1 --> STEP2[llm.plan]
+STEP2 --> STEP3[tool: spatial.query_layer]
+STEP3 --> STEP4[tool: spatial.nearby]
+STEP4 --> STEP5[llm.synthesize]
+STEP5 --> STEP6[planner.result]
+STEP6 --> STEP7[run.end]
 
-para crear un **motor de análisis geoespacial autónomo y extensible**.
+STEP3 --> META1[idx, latency_ms, error]
+STEP4 --> META2[input_json/output_json]
+```
 
+Este registro ordenado permite auditoría y depuración paso a paso.
