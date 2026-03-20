@@ -64,6 +64,45 @@ class RunSerializer(serializers.ModelSerializer):
     def _output(self, obj):
         return obj.output_json or {}
 
+    def _normalize_executed_outputs(self, raw_steps):
+        normalized = []
+
+        for step in raw_steps:
+            verification = step.get("verification") or {}
+            success_criteria = step.get("success_criteria") or {}
+
+            normalized.append(
+                {
+                    "id": step.get("id"),
+                    "type": step.get("type"),
+                    "name": step.get("name"),
+                    "ok": step.get("ok"),
+                    "data": step.get("data", {}),
+                    "error": step.get("error", ""),
+                    "required": step.get("required", True),
+                    "depends_on": step.get("depends_on", []),
+                    "resolved_args": step.get("resolved_args", {}),
+                    "attempts": step.get("attempts", []),
+                    "attempt_count": step.get("attempt_count", 0),
+                    "latency_ms": step.get("latency_ms", 0),
+                    "latency_ms_total": step.get("latency_ms_total", 0),
+                    "success_criteria": success_criteria,
+                    "verification": {
+                        "status": verification.get("status", "not_evaluated"),
+                        "reason": verification.get("reason", ""),
+                        "target": verification.get("target", ""),
+                        "criteria": verification.get("criteria", success_criteria),
+                        "observed": verification.get("observed"),
+                        "hypothesis": verification.get(
+                            "hypothesis",
+                            step.get("hypothesis", ""),
+                        ),
+                    },
+                }
+            )
+
+        return normalized
+
     def get_replan_count(self, obj):
         return self._output(obj).get("replan_count", 0)
 
@@ -71,7 +110,8 @@ class RunSerializer(serializers.ModelSerializer):
         return self._output(obj).get("plan_history", [])
 
     def get_executed_outputs(self, obj):
-        return self._output(obj).get("executed_outputs", [])
+        raw_steps = self._output(obj).get("executed_outputs", [])
+        return self._normalize_executed_outputs(raw_steps)
 
     def get_verification_summary(self, obj):
         executed_outputs = self.get_executed_outputs(obj)
@@ -101,13 +141,16 @@ class RunSerializer(serializers.ModelSerializer):
             item = {
                 "id": step.get("id"),
                 "tool": step.get("name"),
-                "hypothesis": verification.get("hypothesis") or step.get("hypothesis"),
-                "target": verification.get("target") or step.get("verification_target"),
-                "reason": verification.get("reason"),
+                "hypothesis": verification.get("hypothesis", ""),
+                "target": verification.get("target", ""),
+                "reason": verification.get("reason", ""),
                 "observed": verification.get("observed"),
-                "criteria": verification.get("criteria") or step.get("success_criteria") or {},
+                "criteria": verification.get("criteria") or {},
                 "ok": step.get("ok"),
-                "error": step.get("error"),
+                "error": step.get("error", ""),
+                "depends_on": step.get("depends_on", []),
+                "resolved_args": step.get("resolved_args", {}),
+                "attempt_count": step.get("attempt_count", 0),
             }
             summary[status].append(item)
             summary["counts"][status] += 1
@@ -158,13 +201,53 @@ class RunTraceSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def _normalize_executed_outputs(self, raw_steps):
+        normalized = []
+
+        for step in raw_steps:
+            verification = step.get("verification") or {}
+            success_criteria = step.get("success_criteria") or {}
+
+            normalized.append(
+                {
+                    "id": step.get("id"),
+                    "type": step.get("type"),
+                    "name": step.get("name"),
+                    "ok": step.get("ok"),
+                    "data": step.get("data", {}),
+                    "error": step.get("error", ""),
+                    "required": step.get("required", True),
+                    "depends_on": step.get("depends_on", []),
+                    "resolved_args": step.get("resolved_args", {}),
+                    "attempts": step.get("attempts", []),
+                    "attempt_count": step.get("attempt_count", 0),
+                    "latency_ms": step.get("latency_ms", 0),
+                    "latency_ms_total": step.get("latency_ms_total", 0),
+                    "success_criteria": success_criteria,
+                    "verification": {
+                        "status": verification.get("status", "not_evaluated"),
+                        "reason": verification.get("reason", ""),
+                        "target": verification.get("target", ""),
+                        "criteria": verification.get("criteria", success_criteria),
+                        "observed": verification.get("observed"),
+                        "hypothesis": verification.get(
+                            "hypothesis",
+                            step.get("hypothesis", ""),
+                        ),
+                    },
+                }
+            )
+
+        return normalized
+
     def get_steps(self, obj):
         qs = RunStep.objects.filter(run=obj).order_by("idx")
         return RunStepSerializer(qs, many=True).data
 
     def get_trace(self, obj):
         output = obj.output_json or {}
-        executed_outputs = output.get("executed_outputs", [])
+        raw_executed_outputs = output.get("executed_outputs", [])
+        executed_outputs = self._normalize_executed_outputs(raw_executed_outputs)
         plan_history = output.get("plan_history", [])
 
         verification = {
@@ -199,17 +282,17 @@ class RunTraceSerializer(serializers.ModelSerializer):
                 "id": step.get("id"),
                 "tool": step.get("name"),
                 "ok": step.get("ok"),
-                "hypothesis": v.get("hypothesis") or step.get("hypothesis"),
-                "target": v.get("target") or step.get("verification_target"),
-                "criteria": v.get("criteria") or step.get("success_criteria") or {},
+                "hypothesis": v.get("hypothesis") or "",
+                "target": v.get("target") or "",
+                "criteria": v.get("criteria") or {},
                 "observed": v.get("observed"),
-                "reason": v.get("reason"),
+                "reason": v.get("reason") or "",
                 "depends_on": step.get("depends_on", []),
                 "resolved_args": step.get("resolved_args", {}),
                 "attempt_count": step.get("attempt_count", 0),
                 "latency_ms": step.get("latency_ms", 0),
                 "latency_ms_total": step.get("latency_ms_total", 0),
-                "error": step.get("error"),
+                "error": step.get("error", ""),
             }
             verification[status].append(item)
             verification["counts"][status] += 1

@@ -101,9 +101,20 @@ class AgentsCoreApiTests(APITestCase):
         run.output_json = {
             "ok": True,
             "goal": "ejecuta este run",
-            "plan": {"steps": [{"id": "s1", "type": "tool", "name": "spatial.query_layer"}, {"type": "final"}]},
+            "plan": {
+                "steps": [
+                    {"id": "s1", "type": "tool", "name": "spatial.query_layer"},
+                    {"type": "final"},
+                ]
+            },
             "plan_history": [
-                {"label": "initial", "steps": [{"id": "s1", "type": "tool", "name": "spatial.query_layer"}, {"type": "final"}]}
+                {
+                    "label": "initial",
+                    "steps": [
+                        {"id": "s1", "type": "tool", "name": "spatial.query_layer"},
+                        {"type": "final"},
+                    ],
+                }
             ],
             "replan_count": 0,
             "executed_outputs": [
@@ -139,6 +150,20 @@ class AgentsCoreApiTests(APITestCase):
         self.assertIn("verification_summary", response.data)
         self.assertIn("executed_outputs", response.data)
         self.assertEqual(len(response.data["executed_outputs"]), 1)
+
+        step = response.data["executed_outputs"][0]
+        self.assertIn("attempt_count", step)
+        self.assertIn("depends_on", step)
+        self.assertIn("resolved_args", step)
+        self.assertIn("verification", step)
+        self.assertEqual(step["attempt_count"], 1)
+        self.assertEqual(step["depends_on"], [])
+        self.assertEqual(step["resolved_args"], {})
+        self.assertEqual(step["verification"]["status"], "not_evaluated")
+        self.assertEqual(
+            step["verification"]["reason"],
+            "No success_criteria provided.",
+        )
 
     def test_execute_action_cannot_access_other_user_run(self):
         foreign_run = Run.objects.create(
@@ -316,6 +341,29 @@ class AgentsCoreApiTests(APITestCase):
             2,
         )
 
+        verified_item = response.data["trace"]["verification_summary"]["verified"][0]
+        self.assertIn("depends_on", verified_item)
+        self.assertIn("resolved_args", verified_item)
+        self.assertIn("attempt_count", verified_item)
+        self.assertIn("reason", verified_item)
+        self.assertEqual(verified_item["depends_on"], [])
+        self.assertEqual(verified_item["attempt_count"], 2)
+        self.assertEqual(
+            verified_item["reason"],
+            "Evaluated equals on path 'data.path_found'.",
+        )
+
+        trace_step = response.data["trace"]["executed_outputs"][0]
+        self.assertEqual(trace_step["depends_on"], [])
+        self.assertIn("resolved_args", trace_step)
+        self.assertIn("attempt_count", trace_step)
+        self.assertEqual(trace_step["attempt_count"], 2)
+        self.assertEqual(trace_step["verification"]["status"], "verified")
+        self.assertEqual(
+            trace_step["verification"]["reason"],
+            "Evaluated equals on path 'data.path_found'.",
+        )
+
     def test_trace_action_cannot_access_other_user_run(self):
         foreign_run = Run.objects.create(
             agent=self.agent,
@@ -327,6 +375,84 @@ class AgentsCoreApiTests(APITestCase):
         response = self.client.get(url)
 
         self.assertEqual(response.status_code, 404)
+
+    def test_run_serializer_normalizes_contract_defaults(self):
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            status="succeeded",
+            input_json={"goal": "defaults contract"},
+            output_json={
+                "ok": True,
+                "plan_history": [],
+                "replan_count": 0,
+                "executed_outputs": [
+                    {
+                        "id": "s1",
+                        "type": "tool",
+                        "name": "spatial.query_layer",
+                        "ok": True,
+                    }
+                ],
+            },
+        )
+
+        url = reverse("runs-detail", kwargs={"pk": run.id})
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        step = response.data["executed_outputs"][0]
+
+        self.assertEqual(step["attempt_count"], 0)
+        self.assertEqual(step["depends_on"], [])
+        self.assertEqual(step["resolved_args"], {})
+        self.assertEqual(step["verification"]["status"], "not_evaluated")
+        self.assertEqual(step["verification"]["reason"], "")
+        self.assertEqual(response.data["replan_count"], 0)
+        self.assertEqual(response.data["plan_history"], [])
+
+    def test_trace_serializer_normalizes_contract_defaults(self):
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            status="succeeded",
+            input_json={"goal": "trace defaults"},
+            output_json={
+                "ok": True,
+                "plan": {"steps": [{"id": "s1", "type": "tool", "name": "spatial.query_layer"}, {"type": "final"}]},
+                "plan_history": [],
+                "replan_count": 0,
+                "executed_outputs": [
+                    {
+                        "id": "s1",
+                        "type": "tool",
+                        "name": "spatial.query_layer",
+                        "ok": True,
+                    }
+                ],
+            },
+        )
+
+        url = reverse("runs-trace", kwargs={"pk": run.id})
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+
+        trace_step = response.data["trace"]["executed_outputs"][0]
+        self.assertEqual(trace_step["depends_on"], [])
+        self.assertEqual(trace_step["resolved_args"], {})
+        self.assertEqual(trace_step["attempt_count"], 0)
+        self.assertEqual(trace_step["verification"]["status"], "not_evaluated")
+        self.assertEqual(trace_step["verification"]["reason"], "")
+
+        verification_item = response.data["trace"]["verification_summary"]["not_evaluated"][0]
+        self.assertEqual(verification_item["depends_on"], [])
+        self.assertEqual(verification_item["resolved_args"], {})
+        self.assertEqual(verification_item["attempt_count"], 0)
+        self.assertEqual(verification_item["reason"], "")
+
+        self.assertEqual(response.data["trace"]["replan_count"], 0)
+        self.assertEqual(response.data["trace"]["plan_history"], [])
 
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
@@ -374,7 +500,22 @@ class AgentsCoreApiTests(APITestCase):
 
         self.assertEqual(execute_response.status_code, 200)
         self.assertEqual(execute_response.data["status"], "succeeded")
-        self.assertEqual(execute_response.data["verification_summary"]["counts"]["verified"], 1)
+        self.assertEqual(
+            execute_response.data["verification_summary"]["counts"]["verified"],
+            1,
+        )
+
+        execute_step = execute_response.data["executed_outputs"][0]
+        self.assertIn("attempt_count", execute_step)
+        self.assertIn("depends_on", execute_step)
+        self.assertIn("resolved_args", execute_step)
+        self.assertEqual(execute_step["attempt_count"], 1)
+        self.assertEqual(execute_step["depends_on"], [])
+        self.assertEqual(execute_step["verification"]["status"], "verified")
+        self.assertEqual(
+            execute_step["verification"]["reason"],
+            "Evaluated equals on path 'data.path_found'.",
+        )
 
         trace_url = reverse("runs-trace", kwargs={"pk": run.id})
         trace_response = self.client.get(trace_url)
@@ -385,4 +526,13 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(
             trace_response.data["trace"]["verification_summary"]["counts"]["verified"],
             1,
+        )
+
+        verified_item = trace_response.data["trace"]["verification_summary"]["verified"][0]
+        self.assertEqual(verified_item["attempt_count"], 1)
+        self.assertEqual(verified_item["depends_on"], [])
+        self.assertIn("resolved_args", verified_item)
+        self.assertEqual(
+            verified_item["reason"],
+            "Evaluated equals on path 'data.path_found'.",
         )
