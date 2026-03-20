@@ -409,6 +409,22 @@ python manage.py test agents_core.tests
 python manage.py test agents_core.tests_api
 ```
 
+# Ejemplos oficiales y regresión manual
+
+GeoAgents incluye una pequeña batería oficial de ejemplos reproducibles para:
+
+- demo
+- QA
+- onboarding
+- validación manual tras cambios internos
+
+Documentación asociada:
+
+```text
+docs/examples.md
+docs/manual_regression.md
+```
+
 ## Suite completa
 
 ```bash id="db1jnt"

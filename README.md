@@ -7,77 +7,123 @@
 
 **GeoAgents** is an open-source framework for building **AI agents specialized in geospatial analysis (GIS)**.
 
-It allows AI agents to:
+It is designed to let AI agents:
 
-- understand spatial questions
-- select GIS tools automatically
-- execute spatial analysis
-- generate natural language explanations
+* understand spatial questions
+* select GIS tools automatically
+* execute spatial analysis
+* verify hypotheses about the results
+* generate natural language explanations
+* expose a full execution trace through API
 
-GeoAgents is designed for:
+GeoAgents is oriented to:
 
-- GIS applications
-- geospatial platforms
-- telecom infrastructure analysis
-- digital twins
-- spatial intelligence systems
+* GIS applications
+* geospatial platforms
+* telecom infrastructure analysis
+* digital twins
+* spatial intelligence systems
 
 ---
 
-# Why GeoAgents?
+## Table of Contents
+
+* [Why GeoAgents?](#why-geoagents)
+* [What GeoAgents Does](#what-geoagents-does)
+* [Example](#example)
+* [Architecture](#architecture)
+* [Core Concepts](#core-concepts)
+
+  * [Agents](#agents)
+  * [Tools](#tools)
+  * [Layer Catalog](#layer-catalog)
+  * [Runs, Verification and Trace](#runs-verification-and-trace)
+* [Installation](#installation)
+* [Quick Start](#quick-start)
+* [API](#api)
+* [Official Examples and Manual Regression](#official-examples-and-manual-regression)
+* [Testing](#testing)
+* [Documentation](#documentation)
+* [Repository Structure](#repository-structure)
+* [Extending GeoAgents](#extending-geoagents)
+* [Roadmap](#roadmap)
+* [Contributing](#contributing)
+* [License](#license)
+* [Maintainer](#maintainer)
+* [Credits](#credits)
+
+---
+
+## Why GeoAgents?
 
 Most agent frameworks focus on:
 
-- text reasoning
-- retrieval
-- general APIs
+* text reasoning
+* retrieval
+* general APIs
 
 GeoAgents introduces **structured geospatial reasoning**.
 
 The framework provides:
 
-✔ spatial tool orchestration  
-✔ GIS layer inference  
-✔ reproducible spatial analysis  
-✔ controlled LLM reasoning  
-✔ modular architecture  
+* spatial tool orchestration
+* GIS layer inference
+* reproducible spatial analysis
+* controlled LLM reasoning
+* verifiable multi-step execution
+* traceable runs through API
+* modular architecture
 
 ---
 
-# Example
+## What GeoAgents Does
+
+GeoAgents separates the lifecycle of a geospatial agent into explicit phases:
+
+```text
+plan -> execute -> verify -> optional replan -> synthesize
+```
+
+This means the framework is not limited to “calling one tool and returning text”. It can:
+
+* build multi-step plans
+* pass outputs from one step to another
+* verify whether a hypothesis was confirmed or refuted
+* replan when a step fails or evidence is insufficient
+* persist the full execution trace for inspection and debugging
+
+---
+
+## Example
 
 User question:
 
-```
-
+```text
 Are the points located inside the zones in this area?
-
 ```
 
-GeoAgents will automatically:
+GeoAgents will typically:
 
-1️⃣ generate a spatial plan  
-2️⃣ select the correct tool (`spatial.intersects`)  
-3️⃣ execute spatial analysis  
-4️⃣ synthesize the result  
+1. generate a spatial plan
+2. select the appropriate GIS tool, for example `spatial.intersects`
+3. execute the analysis
+4. verify the result if applicable
+5. synthesize a final response
 
 Example response:
 
-```
-
+```text
 Two intersections were detected between the points and Zone 1.
 Points A and B intersect with the polygon area.
-
 ```
 
 ---
 
-# Architecture
+## Architecture
 
-GeoAgents separates **reasoning**, **execution**, and **explanation**.
+GeoAgents separates **reasoning**, **execution**, **verification**, and **explanation**.
 
-```
-
+```text
 User Query
 │
 ▼
@@ -87,79 +133,103 @@ Planner (LLM)
 Plan Validation
 │
 ▼
-Plan Postprocessor
+Plan Postprocessor / Normalization
 │
 ▼
-Execution Engine
+Runner
 │
 ▼
 GIS Tools
 │
 ▼
-Facts Extraction
+Verification
+│
+▼
+Optional Replan
 │
 ▼
 Synthesizer (LLM)
 │
 ▼
 Final Response
-
 ```
 
-Full diagrams available here:
+The runtime cycle can be summarized as:
 
+```text
+plan -> execute -> verify -> optional replan -> synthesize
 ```
 
-docs/framework_diagrams.md
+Detailed docs:
 
+```text
+docs/architecture.md
+docs/diagrams.md
 ```
 
 ---
 
-# Core Concepts
+## Core Concepts
 
-## Agents
+### Agents
 
 Agents define:
 
-- system prompt
-- allowed tools
-- execution profile
+* system prompt
+* allowed tools
+* execution profile
 
 Profiles:
 
-```
-
+```text
 compact
 rich
 investigate
+```
 
+An agent does not execute tools by itself. It defines the reasoning and tool boundaries that the runner will use during a `Run`.
+
+More details:
+
+```text
+docs/agents.md
 ```
 
 ---
 
-## Tools
+### Tools
 
-GeoAgents uses **GIS tools** to perform analysis.
+GeoAgents uses **GIS tools** to perform deterministic spatial operations.
 
-Current tools:
+Current core tools include:
 
-```
-
-spatial.intersects
-spatial.nearby
+```text
+spatial.summary
 spatial.query_layer
+spatial.nearby
+spatial.intersects
 spatial.context_pack
+spatial.network_trace
+```
 
-````
+Tools can participate in:
 
-Tools execute deterministic spatial logic.
+* single-step analysis
+* multi-step workflows
+* hypothesis verification
+* replan flows
+
+More details:
+
+```text
+docs/tools.md
+```
 
 ---
 
-## Layer Catalog
+### Layer Catalog
 
-GeoAgents understands GIS datasets through a **layer catalog**.
+GeoAgents understands datasets through a **layer catalog**.
 
 Example:
 
@@ -167,66 +237,108 @@ Example:
 [
   {
     "name": "demo_points",
-    "geometry": "POINT"
+    "geometry_kind": "point"
+  },
+  {
+    "name": "demo_lines",
+    "geometry_kind": "line"
   },
   {
     "name": "demo_polygons",
-    "geometry": "POLYGON"
+    "geometry_kind": "polygon"
   }
 ]
-````
-
-This allows the agent to automatically infer:
-
 ```
+
+This allows the agent to infer likely layers for concepts such as:
+
+```text
 points
 zones
 lines
 ```
 
-without knowing exact layer names.
+without having to know the exact layer names in advance.
 
 ---
 
-# Installation
+### Runs, Verification and Trace
 
-Clone the repository.
+Every execution is persisted as a `Run`.
 
+A run may contain:
+
+* input payload
+* final plan
+* plan history
+* executed tool outputs
+* verification summary
+* final synthesized text
+* full persisted step log
+
+Verification states include:
+
+```text
+verified
+refuted
+inconclusive
+not_evaluated
 ```
-git clone https://github.com/your-org/geoagents.git
-cd geoagents
+
+This makes the framework observable and suitable for:
+
+* demos
+* QA
+* debugging
+* auditability
+
+API details:
+
+```text
+docs/api.md
 ```
 
-Create a virtual environment.
+---
 
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/juaquicar/GeoAgents.git
+cd GeoAgents
 ```
+
+Create a virtual environment:
+
+```bash
 python -m venv .venv
 source .venv/bin/activate
 ```
 
-Install dependencies.
+Install dependencies:
 
-```
+```bash
 pip install -r requirements.txt
 ```
 
-Run migrations.
+Run migrations:
 
-```
+```bash
 python manage.py migrate
 ```
 
-Start the server.
+Start the server:
 
-```
+```bash
 python manage.py runserver
 ```
 
 ---
 
-# Quick Start
+## Quick Start
 
-Create an agent.
+Create an agent:
 
 ```python
 from agents_core.models import Agent
@@ -239,12 +351,13 @@ agent = Agent.objects.create(
         "spatial.intersects",
         "spatial.nearby",
         "spatial.query_layer",
-        "spatial.context_pack"
-    ]
+        "spatial.context_pack",
+        "spatial.network_trace",
+    ],
 )
 ```
 
-Run an analysis.
+Create and execute a run:
 
 ```python
 from agents_core.models import Run
@@ -252,6 +365,7 @@ from agents_core.runner import execute_run
 
 run = Run.objects.create(
     agent=agent,
+    user=user,
     input_json={
         "goal": "Check if the points are inside the zones",
         "map_context": {
@@ -260,179 +374,311 @@ run = Run.objects.create(
                 "south": 37.32,
                 "east": -6.05,
                 "north": 37.33
-            }
+            },
+            "zoom": 18
         }
     }
 )
 
-execute_run(run)
+run = execute_run(run)
 
 print(run.final_text)
+print(run.output_json)
+```
+
+Usage guide:
+
+```text
+docs/usage.md
 ```
 
 ---
 
-# API
+## API
 
-GeoAgents exposes a REST API.
+GeoAgents exposes a REST API around:
 
-Example request:
+* agents
+* runs
+* execution
+* steps
+* trace
 
-```
-POST /api/agents/{id}/run/
-```
+Current base routes:
 
-Request body:
-
-```json
-{
-  "goal": "Analyze this area",
-  "map_context": {
-    "bbox": {
-      "west": -6.06,
-      "south": 37.32,
-      "east": -6.05,
-      "north": 37.33
-    }
-  }
-}
+```text
+/api/agents/agents/
+/api/agents/runs/
 ```
 
-See full documentation:
+Typical flow:
 
+1. create a run
+2. execute the run
+3. inspect the run
+4. inspect the trace
+
+Example endpoints:
+
+```text
+POST /api/agents/runs/
+POST /api/agents/runs/{id}/execute/
+GET  /api/agents/runs/{id}/
+GET  /api/agents/runs/{id}/steps/
+GET  /api/agents/runs/{id}/trace/
 ```
+
+Full API documentation:
+
+```text
 docs/api.md
 ```
 
 ---
 
-# Testing
+## Official Examples and Manual Regression
 
-A test script is included.
+GeoAgents includes a small official set of reproducible examples for:
 
-Run:
+* demo
+* QA
+* onboarding
+* manual regression
 
+Canonical examples covered:
+
+* simple layer query
+* multi-tool workflow with step references
+* refuted hypothesis with basic replan
+
+Main docs:
+
+```text
+docs/examples.md
+docs/manual_regression.md
 ```
-python test.py
+
+Payloads:
+
+```text
+examples/01_simple_layer_query.json
+examples/02_multi_tool_with_references.json
+examples/03_refuted_hypothesis_with_replan.json
 ```
 
-This script evaluates multiple scenarios:
+These examples are also represented as canonical planner fixtures in:
 
+```text
+examples/canonical_plans.py
 ```
-intersects
-nearby
-query_layer
-summary
-```
-
-across different agent profiles.
 
 ---
 
-# Documentation
+## Testing
+
+Run core tests:
+
+```bash
+python manage.py test agents_core.tests
+```
+
+Run API tests:
+
+```bash
+python manage.py test agents_core.tests_api
+```
+
+Run the full test suite:
+
+```bash
+python manage.py test
+```
+
+GeoAgents now includes tests for:
+
+* planner validation
+* multi-step execution
+* reference resolution
+* verification states
+* replan behavior
+* API contract
+* trace serialization
+
+---
+
+## Documentation
 
 Full documentation is available in the `docs` folder.
 
-```
+```text
 docs/
-│
-├── architecture.md
-├── framework_diagrams.md
 ├── agents.md
-├── tools.md
-├── usage.md
 ├── api.md
+├── architecture.md
+├── diagrams.md
+├── examples.md
+├── manual_regression.md
+├── tools.md
+└── usage.md
 ```
+
+Recommended reading order:
+
+1. `docs/architecture.md`
+2. `docs/agents.md`
+3. `docs/tools.md`
+4. `docs/api.md`
+5. `docs/usage.md`
+6. `docs/examples.md`
+7. `docs/manual_regression.md`
 
 ---
 
-# Extending GeoAgents
+## Repository Structure
 
-## Add a new tool
+High-level structure:
 
-1️⃣ create a new tool in
-
+```text
+GeoAgents/
+├── agents_core/
+├── agents_gis/
+├── agents_llm/
+├── agents_tools/
+├── docs/
+├── examples/
+├── geoagents/
+├── tests/
+├── manage.py
+├── requirements.txt
+└── README.md
 ```
-agents_gis/tools/
-```
 
-2️⃣ register it in the tool registry
+Main modules:
 
-3️⃣ add rules in
-
-```
-plan_postprocessor.py
-```
-
-4️⃣ expose facts for the synthesizer
+* `agents_core`: runner, models, API, serialization, step persistence
+* `agents_llm`: planner, prompt client, postprocessor, synthesizer
+* `agents_gis`: GIS inference and domain tools
+* `agents_tools`: tool registry, execution layer and introspection
+* `examples`: canonical examples and reproducible payloads
+* `docs`: architecture, API, examples and usage guides
 
 ---
 
-## Add new inference logic
+## Extending GeoAgents
+
+### Add a new tool
+
+Typical steps:
+
+1. create the implementation file
+2. implement the tool
+3. register it in the tool registry
+4. expose it in introspection if needed
+5. add planner/postprocessor support
+6. add synthesizer support if needed
+7. add tests
+8. document it
+
+Relevant locations:
+
+```text
+agents_gis/
+agents_tools/
+agents_llm/plan_postprocessor.py
+docs/tools.md
+```
+
+### Add new inference logic
 
 Edit:
 
-```
+```text
 agents_gis/inference.py
 ```
 
-Example:
+Typical inference areas:
 
-```
+```text
 infer_intersection_layers
 infer_nearby_layer
 infer_query_layer
 ```
 
----
+### Add new examples
 
-# Roadmap
+Use:
 
-Planned features:
-
-* raster analysis tools
-* multi-step spatial reasoning
-* spatial clustering
-* route analysis
-* memory-aware agents
-* IoT spatial analytics
-* 3D geospatial reasoning
+```text
+examples/
+docs/examples.md
+docs/manual_regression.md
+```
 
 ---
 
-# Contributing
+## Roadmap
+
+Planned and natural next steps include:
+
+* persistent run memory
+* episodic memory
+* reusable heuristics
+* execution budgets
+* harder timeouts
+* finer retry policies
+* network-domain expansion
+* advanced spatial analytics
+
+Examples of planned tools:
+
+* `spatial.route_cost`
+* `spatial.network_service_area`
+* `spatial.cluster`
+* `spatial.visibility`
+
+---
+
+## Contributing
 
 Contributions are welcome.
 
-Steps:
+Typical flow:
 
-1️⃣ Fork the repository
-2️⃣ Create a feature branch
+1. fork the repository
+2. create a feature branch
 
-```
+```bash
 git checkout -b feature/my-feature
 ```
 
-3️⃣ Submit a pull request
+3. add tests and documentation
+4. submit a pull request
+
+When contributing, prefer changes that preserve:
+
+* explicit contracts
+* reproducible examples
+* trace clarity
+* deterministic tool behavior where possible
 
 ---
 
-# License
+## License
 
 This project is released under the **MIT License**.
 
 ---
 
-# Maintainer
+## Maintainer
 
-GeoAgents is created and maintained by **Juan Manuel Quijada**  
+GeoAgents is created and maintained by **Juan Manuel Quijada**
 Founder & CEO — Stratos Global Solutions
 
 This project explores AI-driven geospatial reasoning and autonomous spatial analysis.
 
 ---
 
-# Credits
+## Credits
 
 GeoAgents is an experimental framework exploring the intersection of:
 
@@ -440,4 +686,3 @@ GeoAgents is an experimental framework exploring the intersection of:
 * spatial reasoning
 * GIS analytics
 * explainable geospatial intelligence
-
