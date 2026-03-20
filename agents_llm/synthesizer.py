@@ -35,6 +35,11 @@ Reglas adicionales obligatorias:
 - Si existe un campo reason, úsalo literalmente como motivo técnico cuando sea útil.
 - No inventes capas, entidades, distancias, áreas, longitudes o recuentos que no aparezcan en los hechos estructurados.
 - Sé prudente: si una relación topológica no está demostrada, indícalo expresamente.
+- Si existe verification_summary, debes respetar el estado de verificación.
+- Si una hipótesis está "refuted", no la presentes como hallazgo confirmado.
+- Si una hipótesis está "inconclusive", dilo explícitamente.
+- Si una hipótesis está "verified", puedes usarla como evidencia resumida.
+- Prioriza verification_summary frente a cualquier interpretación narrativa libre.
 
 Reglas por perfil:
 - Si agent_profile = "compact", responde de forma breve, directa y con poca ornamentación.
@@ -119,47 +124,69 @@ def _facts_from_intersects(data: Dict[str, Any]) -> List[str]:
 
     items = data.get("items", []) or []
     for item in items[:10]:
-        source_name = item.get("source_name") or item.get("source_id")
-        target_name = item.get("target_name") or item.get("target_id")
-        geom_type = item.get("intersection_geom_type")
-        facts.append(
-            f"Se detectó una intersección entre '{source_name}' y '{target_name}' con geometría de intersección tipo {geom_type}."
-        )
+        source_name = item.get("source_name") or item.get("source_label") or item.get("left_name") or item.get("source_id")
+        target_name = item.get("target_name") or item.get("target_label") or item.get("right_name") or item.get("target_id")
+        geom_type = item.get("intersection_geom_type") or item.get("geom_type") or item.get("geometry_type")
+        if source_name and target_name:
+            if geom_type:
+                facts.append(
+                    f"Se detectó intersección entre '{source_name}' y '{target_name}' con geometría resultante {geom_type}."
+                )
+            else:
+                facts.append(
+                    f"Se detectó intersección entre '{source_name}' y '{target_name}'."
+                )
 
     return facts
 
 
 def _facts_from_nearby(data: Dict[str, Any]) -> List[str]:
     facts = []
-    count_total = data.get("count_total", 0)
     layer = data.get("layer", "")
     point = data.get("point", {}) or {}
+    count_total = data.get("count_total")
+    if count_total is None:
+        count_total = data.get("count")
+    features = data.get("features") or data.get("items") or data.get("results") or []
+    if count_total is None:
+        count_total = len(features)
 
     facts.append(
-        f"spatial.nearby encontró {count_total} elementos de la capa '{layer}' cerca del punto ({point.get('lon')}, {point.get('lat')})."
+        f"spatial.nearby encontró {count_total} elementos cercanos en la capa '{layer}' alrededor del punto ({point.get('lon')}, {point.get('lat')})."
     )
 
-    items = data.get("items", []) or []
-    for item in items[:10]:
-        name = item.get("name") or item.get("id")
+    for item in features[:10]:
+        name = item.get("name") or item.get("label") or item.get("id")
         distance_m = item.get("distance_m")
-        facts.append(f"Elemento '{name}' localizado a {distance_m} metros.")
+        geom_type = item.get("geometry_type") or item.get("geom_type")
+        if distance_m is not None:
+            facts.append(
+                f"Elemento cercano '{name}' a distancia {distance_m} metros, geometría {geom_type}."
+            )
+        else:
+            facts.append(
+                f"Elemento cercano '{name}', geometría {geom_type}."
+            )
 
     return facts
 
 
 def _facts_from_query_layer(data: Dict[str, Any]) -> List[str]:
     facts = []
-    count_total = data.get("count_total", 0)
     layer = data.get("layer", "")
+    features = data.get("features") or data.get("items") or data.get("results") or []
+    count_total = data.get("count_total")
+    if count_total is None:
+        count_total = data.get("count")
+    if count_total is None:
+        count_total = len(features)
 
     facts.append(
         f"spatial.query_layer devolvió {count_total} elementos de la capa '{layer}'."
     )
 
-    items = data.get("items", []) or data.get("features", []) or []
-    for item in items[:10]:
-        name = item.get("name") or item.get("id")
+    for item in features[:10]:
+        name = item.get("name") or item.get("label") or item.get("id")
         geom_type = item.get("geometry_type") or item.get("geom_type")
         centroid = item.get("centroid")
         if centroid and isinstance(centroid, dict):
@@ -442,6 +469,45 @@ def build_tool_facts(step_outputs: List[Dict[str, Any]]) -> List[str]:
     return facts
 
 
+def build_verification_summary(step_outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    summary = {
+        "verified": [],
+        "refuted": [],
+        "inconclusive": [],
+        "not_evaluated": [],
+    }
+
+    for step in step_outputs:
+        if step.get("type") != "tool":
+            continue
+
+        verification = step.get("verification") or {}
+        status = verification.get("status") or "not_evaluated"
+
+        item = {
+            "id": step.get("id"),
+            "tool": step.get("name"),
+            "hypothesis": verification.get("hypothesis") or step.get("hypothesis"),
+            "target": verification.get("target") or step.get("verification_target"),
+            "reason": verification.get("reason"),
+            "observed": verification.get("observed"),
+            "criteria": verification.get("criteria") or step.get("success_criteria") or {},
+            "ok": step.get("ok"),
+            "error": step.get("error"),
+        }
+
+        if status not in summary:
+            status = "not_evaluated"
+        summary[status].append(item)
+
+    summary["counts"] = {
+        key: len(value)
+        for key, value in summary.items()
+        if isinstance(value, list)
+    }
+    return summary
+
+
 def build_synthesizer_user_prompt(
     *,
     goal: str,
@@ -458,6 +524,7 @@ def build_synthesizer_user_prompt(
 
     tool_facts = build_tool_facts(step_outputs)
     structured_facts = extract_structured_facts(step_outputs)
+    verification_summary = build_verification_summary(step_outputs)
 
     payload = {
         "goal": goal,
@@ -467,6 +534,7 @@ def build_synthesizer_user_prompt(
         "plan_steps": plan.get("steps", []),
         "tool_facts": tool_facts,
         "structured_facts": structured_facts,
+        "verification_summary": verification_summary,
         "step_outputs": step_outputs,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)

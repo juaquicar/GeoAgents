@@ -641,6 +641,13 @@ def _goal_is_intersection(goal: str) -> bool:
     ]
     return any(k in goal for k in keywords)
 
+def _goal_is_containment(goal: str) -> bool:
+    keywords = [
+        "dentro de", "caen dentro",
+        "están dentro", "estan dentro",
+        "within", "contains",
+    ]
+    return any(k in goal for k in keywords)
 
 def _goal_is_layer_exploration(goal: str) -> bool:
     keywords = [
