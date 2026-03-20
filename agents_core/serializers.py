@@ -1,4 +1,5 @@
 from rest_framework import serializers
+
 from .models import Agent, Run, RunStep
 
 
@@ -18,22 +19,100 @@ class AgentSerializer(serializers.ModelSerializer):
 
 
 class RunSerializer(serializers.ModelSerializer):
+    agent_name = serializers.CharField(source="agent.name", read_only=True)
+    verification_summary = serializers.SerializerMethodField()
+    replan_count = serializers.SerializerMethodField()
+    plan_history = serializers.SerializerMethodField()
+    executed_outputs = serializers.SerializerMethodField()
+
     class Meta:
         model = Run
         fields = [
             "id",
             "agent",
+            "agent_name",
             "user",
             "status",
             "input_json",
             "output_json",
             "final_text",
             "error",
+            "verification_summary",
+            "replan_count",
+            "plan_history",
+            "executed_outputs",
             "created_at",
             "started_at",
             "ended_at",
         ]
-        read_only_fields = ["id", "user", "status", "output_json", "final_text", "error", "created_at", "started_at", "ended_at"]
+        read_only_fields = [
+            "id",
+            "user",
+            "status",
+            "output_json",
+            "final_text",
+            "error",
+            "verification_summary",
+            "replan_count",
+            "plan_history",
+            "executed_outputs",
+            "created_at",
+            "started_at",
+            "ended_at",
+        ]
+
+    def _output(self, obj):
+        return obj.output_json or {}
+
+    def get_replan_count(self, obj):
+        return self._output(obj).get("replan_count", 0)
+
+    def get_plan_history(self, obj):
+        return self._output(obj).get("plan_history", [])
+
+    def get_executed_outputs(self, obj):
+        return self._output(obj).get("executed_outputs", [])
+
+    def get_verification_summary(self, obj):
+        executed_outputs = self.get_executed_outputs(obj)
+
+        summary = {
+            "verified": [],
+            "refuted": [],
+            "inconclusive": [],
+            "not_evaluated": [],
+            "counts": {
+                "verified": 0,
+                "refuted": 0,
+                "inconclusive": 0,
+                "not_evaluated": 0,
+            },
+        }
+
+        for step in executed_outputs:
+            if step.get("type") != "tool":
+                continue
+
+            verification = step.get("verification") or {}
+            status = verification.get("status") or "not_evaluated"
+            if status not in summary:
+                status = "not_evaluated"
+
+            item = {
+                "id": step.get("id"),
+                "tool": step.get("name"),
+                "hypothesis": verification.get("hypothesis") or step.get("hypothesis"),
+                "target": verification.get("target") or step.get("verification_target"),
+                "reason": verification.get("reason"),
+                "observed": verification.get("observed"),
+                "criteria": verification.get("criteria") or step.get("success_criteria") or {},
+                "ok": step.get("ok"),
+                "error": step.get("error"),
+            }
+            summary[status].append(item)
+            summary["counts"][status] += 1
+
+        return summary
 
 
 class RunStepSerializer(serializers.ModelSerializer):
@@ -52,3 +131,102 @@ class RunStepSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class RunTraceSerializer(serializers.ModelSerializer):
+    agent_name = serializers.CharField(source="agent.name", read_only=True)
+    steps = serializers.SerializerMethodField()
+    trace = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Run
+        fields = [
+            "id",
+            "agent",
+            "agent_name",
+            "user",
+            "status",
+            "input_json",
+            "output_json",
+            "final_text",
+            "error",
+            "created_at",
+            "started_at",
+            "ended_at",
+            "steps",
+            "trace",
+        ]
+        read_only_fields = fields
+
+    def get_steps(self, obj):
+        qs = RunStep.objects.filter(run=obj).order_by("idx")
+        return RunStepSerializer(qs, many=True).data
+
+    def get_trace(self, obj):
+        output = obj.output_json or {}
+        executed_outputs = output.get("executed_outputs", [])
+        plan_history = output.get("plan_history", [])
+
+        verification = {
+            "verified": [],
+            "refuted": [],
+            "inconclusive": [],
+            "not_evaluated": [],
+            "counts": {
+                "verified": 0,
+                "refuted": 0,
+                "inconclusive": 0,
+                "not_evaluated": 0,
+            },
+        }
+
+        total_attempts = 0
+        total_latency_ms = 0
+
+        for step in executed_outputs:
+            if step.get("type") != "tool":
+                continue
+
+            total_attempts += step.get("attempt_count", 0) or 0
+            total_latency_ms += step.get("latency_ms_total", 0) or 0
+
+            v = step.get("verification") or {}
+            status = v.get("status") or "not_evaluated"
+            if status not in verification:
+                status = "not_evaluated"
+
+            item = {
+                "id": step.get("id"),
+                "tool": step.get("name"),
+                "ok": step.get("ok"),
+                "hypothesis": v.get("hypothesis") or step.get("hypothesis"),
+                "target": v.get("target") or step.get("verification_target"),
+                "criteria": v.get("criteria") or step.get("success_criteria") or {},
+                "observed": v.get("observed"),
+                "reason": v.get("reason"),
+                "depends_on": step.get("depends_on", []),
+                "resolved_args": step.get("resolved_args", {}),
+                "attempt_count": step.get("attempt_count", 0),
+                "latency_ms": step.get("latency_ms", 0),
+                "latency_ms_total": step.get("latency_ms_total", 0),
+                "error": step.get("error"),
+            }
+            verification[status].append(item)
+            verification["counts"][status] += 1
+
+        return {
+            "goal": (obj.input_json or {}).get("goal", ""),
+            "plan": output.get("plan", {}),
+            "plan_history": plan_history,
+            "replan_count": output.get("replan_count", 0),
+            "executed_outputs": executed_outputs,
+            "verification_summary": verification,
+            "stats": {
+                "tool_steps_executed": len(
+                    [s for s in executed_outputs if s.get("type") == "tool"]
+                ),
+                "total_attempts": total_attempts,
+                "total_latency_ms": total_latency_ms,
+                "persisted_steps": RunStep.objects.filter(run=obj).count(),
+            },
+        }
