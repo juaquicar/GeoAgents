@@ -6,7 +6,7 @@ from django.urls import reverse
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from agents_core.models import Agent, Run, RunStep
+from agents_core.models import Agent, Episode, Run, RunMemory, RunStep
 
 
 def _tool_ok(data):
@@ -536,3 +536,136 @@ class AgentsCoreApiTests(APITestCase):
             verified_item["reason"],
             "Evaluated equals on path 'data.path_found'.",
         )
+
+    def test_runs_list_can_filter_by_persisted_memory_fields(self):
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            status="succeeded",
+            input_json={"goal": "Traza una ruta por la red"},
+            output_json={"ok": True},
+        )
+        other_run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            status="succeeded",
+            input_json={"goal": "Consulta simple"},
+            output_json={"ok": True},
+        )
+
+        RunMemory.objects.create(
+            run=run,
+            normalized_goal="traza una ruta por la red",
+            goal_signature="traza|ruta|red",
+            domain="network",
+            analysis_types=["network_trace"],
+            analysis_types_search="network_trace",
+            layers=["demo_lines"],
+            layers_search="demo_lines",
+            tools_used=["spatial.network_trace"],
+            tools_search="spatial.network_trace",
+            tool_sequence_signature="spatial.network_trace",
+            verification_status="verified",
+            outcome={"status": "succeeded"},
+        )
+        RunMemory.objects.create(
+            run=other_run,
+            normalized_goal="consulta simple",
+            goal_signature="consulta|simple",
+            domain="layer_inspection",
+            analysis_types=["layer_query"],
+            analysis_types_search="layer_query",
+            layers=["demo_points"],
+            layers_search="demo_points",
+            tools_used=["spatial.query_layer"],
+            tools_search="spatial.query_layer",
+            tool_sequence_signature="spatial.query_layer",
+            verification_status="not_evaluated",
+            outcome={"status": "succeeded"},
+        )
+
+        url = reverse("runs-list")
+        response = self.client.get(
+            url,
+            {
+                "tool": "spatial.network_trace",
+                "layer": "demo_lines",
+                "analysis_type": "network_trace",
+                "verification_status": "verified",
+                "domain": "network",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item["id"] for item in response.data]
+        self.assertEqual(ids, [run.id])
+
+    def test_execute_response_includes_run_memory_and_episode(self):
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={"goal": "ejecuta este run"},
+        )
+        run.status = "succeeded"
+        run.final_text = "respuesta final"
+        run.output_json = {
+            "ok": True,
+            "goal": "ejecuta este run",
+            "plan": {"steps": [{"type": "final"}]},
+            "plan_history": [],
+            "replan_count": 0,
+            "executed_outputs": [],
+            "verification_summary": {
+                "verified": [],
+                "refuted": [],
+                "inconclusive": [],
+                "not_evaluated": [],
+                "counts": {
+                    "verified": 0,
+                    "refuted": 0,
+                    "inconclusive": 0,
+                    "not_evaluated": 0,
+                },
+            },
+        }
+        run.save()
+        RunMemory.objects.create(
+            run=run,
+            normalized_goal="ejecuta este run",
+            goal_signature="ejecuta|run",
+            domain="generic_spatial",
+            analysis_types=["generic_spatial"],
+            analysis_types_search="generic_spatial",
+            layers=[],
+            layers_search="",
+            tools_used=[],
+            tools_search="",
+            tool_sequence_signature="none",
+            verification_status="not_evaluated",
+            verification_summary=run.output_json["verification_summary"],
+            outcome={"status": "succeeded"},
+        )
+        Episode.objects.create(
+            run=run,
+            normalized_goal="ejecuta este run",
+            goal_signature="ejecuta|run",
+            domain="generic_spatial",
+            analysis_types=["generic_spatial"],
+            tools_used=[],
+            tool_sequence=[],
+            tool_sequence_signature="none",
+            outcome_status="succeeded",
+            verification_status="not_evaluated",
+            success=True,
+            recommended_strategy="Arranque recomendado: spatial.query_layer.",
+        )
+
+        with patch("agents_core.views.execute_run", return_value=run):
+            url = reverse("runs-execute", kwargs={"pk": run.id})
+            response = self.client.post(url, {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.data["run_memory"])
+        self.assertIsNotNone(response.data["episode"])
+        self.assertEqual(response.data["run_memory"]["goal_signature"], "ejecuta|run")
+        self.assertEqual(response.data["episode"]["outcome_status"], "succeeded")

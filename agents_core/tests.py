@@ -4,7 +4,13 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from agents_core.models import Agent, Run
+from agents_core.heuristics import (
+    build_goal_signature,
+    classify_goal_domain,
+    select_fallback_tools,
+    select_initial_tools,
+)
+from agents_core.models import Agent, EpisodePattern, Run, RunMemory
 from agents_core.runner import execute_run
 from agents_llm.planner import plan_run, validate_plan
 
@@ -688,3 +694,110 @@ class RunnerReasoningTests(TestCase):
         self.assertEqual(step["attempts"][0]["ok"], False)
         self.assertEqual(step["attempts"][1]["ok"], True)
         self.assertEqual(step["verification"]["status"], "verified")
+
+class RunMemoryPersistenceTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="memory_tester",
+            email="memory_tester@example.com",
+            password="secret123",
+        )
+        self.agent = Agent.objects.create(
+            name="memory-agent",
+            profile="investigate",
+            tool_allowlist=[
+                "spatial.network_trace",
+                "spatial.context_pack",
+                "spatial.query_layer",
+            ],
+        )
+
+    @patch("agents_core.runner.synthesize_run")
+    @patch("agents_core.runner.invoke_tool")
+    @patch("agents_core.runner.plan_run")
+    def test_execute_run_persists_run_memory_episode_and_pattern(
+        self,
+        mock_plan_run,
+        mock_invoke_tool,
+        mock_synthesize_run,
+    ):
+        mock_plan_run.return_value = {
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "tool",
+                    "name": "spatial.network_trace",
+                    "args": {
+                        "layer": "demo_lines",
+                        "start_point": {"lon": -6.05, "lat": 37.32},
+                        "end_point": {"lon": -6.06, "lat": 37.33},
+                    },
+                    "success_criteria": {"path": "data.path_found", "equals": True},
+                    "can_replan": True,
+                },
+                {"type": "final"},
+            ],
+            "_meta": {},
+        }
+        mock_invoke_tool.return_value = (_tool_ok({"path_found": True, "features": [{"id": 1}]}), 12)
+        mock_synthesize_run.return_value = "Ruta encontrada"
+
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={"goal": "Traza una ruta por la red urbana principal"},
+        )
+
+        result_run = execute_run(run)
+
+        self.assertEqual(result_run.status, "succeeded")
+        memory = RunMemory.objects.get(run=result_run)
+        self.assertEqual(memory.domain, "network")
+        self.assertEqual(memory.goal_signature, build_goal_signature(run.input_json["goal"]))
+        self.assertEqual(memory.tools_used, ["spatial.network_trace"])
+        self.assertEqual(memory.layers, ["demo_lines"])
+        self.assertEqual(memory.verification_status, "verified")
+        self.assertEqual(memory.outcome["tool_steps_executed"], 1)
+
+        episode = result_run.episode
+        self.assertTrue(episode.success)
+        self.assertIn("Secuencia efectiva detectada", episode.recommended_strategy)
+
+        pattern = EpisodePattern.objects.get(
+            goal_signature=memory.goal_signature,
+            domain="network",
+            tool_sequence_signature="spatial.network_trace",
+        )
+        self.assertEqual(pattern.sample_size, 1)
+        self.assertEqual(pattern.success_rate, 1.0)
+
+
+class HeuristicsTests(TestCase):
+    def test_goal_signature_and_domain_are_deterministic(self):
+        goal = "Traza una ruta por la red urbana y valida el camino"
+
+        self.assertEqual(
+            build_goal_signature(goal),
+            "traza|ruta|red|urbana|valida|camino",
+        )
+        self.assertEqual(classify_goal_domain(goal), "network")
+
+    def test_tool_selection_rules_cover_initial_and_fallback(self):
+        allowlist = [
+            "spatial.network_trace",
+            "spatial.context_pack",
+            "spatial.query_layer",
+        ]
+
+        self.assertEqual(
+            select_initial_tools("Necesito contexto espacial de esta zona", allowlist),
+            ["spatial.context_pack"],
+        )
+        self.assertEqual(
+            select_fallback_tools(
+                "Traza una ruta por la red",
+                "spatial.network_trace",
+                allowlist,
+            ),
+            ["spatial.query_layer", "spatial.context_pack", "spatial.network_trace"],
+        )
