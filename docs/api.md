@@ -2,27 +2,27 @@
 
 La API de GeoAgents expone el núcleo del framework de agentes mediante recursos REST sobre:
 
-- agentes (`agents`)
-- ejecuciones (`runs`)
-- trazas de ejecución (`trace`)
-- pasos persistidos (`steps`)
+* agentes (`agents`)
+* ejecuciones (`runs`)
+* trazas de ejecución (`trace`)
+* pasos persistidos (`steps`)
 
 Permite:
 
-- listar y consultar agentes disponibles
-- crear ejecuciones (`Run`)
-- ejecutar un run bajo demanda
-- inspeccionar el resultado final
-- revisar el detalle de pasos persistidos
-- auditar el plan, los replans, las verificaciones y los tiempos de ejecución
+* listar y consultar agentes disponibles
+* crear ejecuciones (`Run`)
+* ejecutar un run bajo demanda
+* inspeccionar el resultado final
+* revisar el detalle de pasos persistidos
+* auditar el plan, los replans, las verificaciones y los tiempos de ejecución
 
 La API está pensada para integrarse con:
 
-- visores GIS
-- aplicaciones web
-- backends
-- scripts de automatización
-- herramientas de debugging y observabilidad
+* visores GIS
+* aplicaciones web
+* backends
+* scripts de automatización
+* herramientas de debugging y observabilidad
 
 ---
 
@@ -30,7 +30,7 @@ La API está pensada para integrarse con:
 
 El flujo real de ejecución es:
 
-```text
+```text id="p6fx8m"
 Client
 │
 ▼
@@ -50,11 +50,11 @@ Verification / optional replan
 │
 ▼
 Synthesizer
-````
+```
 
 En términos de ciclo lógico del agente:
 
-```text
+```text id="6w2h0j"
 plan -> execute -> verify -> optional replan -> synthesize
 ```
 
@@ -64,13 +64,13 @@ plan -> execute -> verify -> optional replan -> synthesize
 
 Ejemplo de prefijo:
 
-```text
+```text id="6zxyr3"
 /api/agents/
 ```
 
 Con el router actual, los recursos publicados son:
 
-```text
+```text id="8wbctw"
 /api/agents/agents/
 /api/agents/runs/
 ```
@@ -79,7 +79,7 @@ Con el router actual, los recursos publicados son:
 
 # Autenticación
 
-Los viewsets requieren autenticación. Actualmente están protegidos con permisos DRF de usuario autenticado. 
+Los viewsets requieren autenticación y actualmente están protegidos con permisos DRF de usuario autenticado.
 
 Según la configuración del proyecto, puede usarse:
 
@@ -89,7 +89,7 @@ Según la configuración del proyecto, puede usarse:
 
 Ejemplo con token DRF:
 
-```text
+```text id="gtaq9n"
 Authorization: Token <token>
 ```
 
@@ -159,14 +159,14 @@ Campos relevantes:
 
 Un run puede pasar por estos estados:
 
-```text
+```text id="1x4fkr"
 queued
 running
 succeeded
 failed
 ```
 
-En tu implementación actual, un run recién creado nace en `queued`.
+En la implementación actual, un run recién creado nace en `queued`.
 
 ---
 
@@ -174,13 +174,13 @@ En tu implementación actual, un run recién creado nace en `queued`.
 
 ## 1) Listar agentes
 
-```http
+```http id="6fjlwm"
 GET /api/agents/agents/
 ```
 
 ### Response
 
-```json
+```json id="nsp8gg"
 [
   {
     "id": 1,
@@ -204,13 +204,13 @@ GET /api/agents/agents/
 
 ## 2) Obtener un agente
 
-```http
+```http id="kay02m"
 GET /api/agents/agents/{id}/
 ```
 
 ### Response
 
-```json
+```json id="b3ur0w"
 {
   "id": 1,
   "name": "geo-agent",
@@ -234,13 +234,13 @@ GET /api/agents/agents/{id}/
 
 Crea el registro de ejecución. No ejecuta todavía el agente.
 
-```http
+```http id="uwo93w"
 POST /api/agents/runs/
 ```
 
 ### Request
 
-```json
+```json id="8vkq9w"
 {
   "agent": 1,
   "input_json": {
@@ -260,7 +260,7 @@ POST /api/agents/runs/
 
 ### Response
 
-```json
+```json id="xh4jmt"
 {
   "id": 42,
   "agent": 1,
@@ -307,7 +307,7 @@ POST /api/agents/runs/
 
 ## 4) Listar runs del usuario autenticado
 
-```http
+```http id="2x5831"
 GET /api/agents/runs/
 ```
 
@@ -315,7 +315,7 @@ Este endpoint devuelve únicamente los runs del usuario autenticado.
 
 ### Response
 
-```json
+```json id="ezl9ce"
 [
   {
     "id": 42,
@@ -372,7 +372,7 @@ Este endpoint devuelve únicamente los runs del usuario autenticado.
 
 ## 5) Obtener un run
 
-```http
+```http id="u7pke1"
 GET /api/agents/runs/{id}/
 ```
 
@@ -380,7 +380,7 @@ Devuelve el run serializado con resumen de verificaciones, plan history y output
 
 ### Response
 
-```json
+```json id="a0sz6r"
 {
   "id": 42,
   "agent": 1,
@@ -480,7 +480,7 @@ Devuelve el run serializado con resumen de verificaciones, plan history y output
 
 Lanza la ejecución del run ya creado.
 
-```http
+```http id="5z9jef"
 POST /api/agents/runs/{id}/execute/
 ```
 
@@ -488,7 +488,7 @@ POST /api/agents/runs/{id}/execute/
 
 Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecución.
 
-```json
+```json id="q0j9gw"
 {
   "id": 42,
   "agent": 1,
@@ -666,7 +666,7 @@ Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecuci
 
 ## 7) Obtener pasos persistidos de un run
 
-```http
+```http id="0h2k4f"
 GET /api/agents/runs/{id}/steps/
 ```
 
@@ -674,7 +674,7 @@ Devuelve los `RunStep` guardados en base de datos.
 
 ### Response
 
-```json
+```json id="mlkimh"
 [
   {
     "id": 1,
@@ -726,7 +726,7 @@ Devuelve los `RunStep` guardados en base de datos.
 
 ## 8) Obtener trace completo de un run
 
-```http
+```http id="cs1l89"
 GET /api/agents/runs/{id}/trace/
 ```
 
@@ -745,7 +745,7 @@ Incluye:
 
 ### Response
 
-```json
+```json id="w2rjlwm"
 {
   "id": 42,
   "agent": 1,
@@ -887,7 +887,7 @@ Incluye:
 
 La API no impone un shape único más allá de `input_json`, pero el caso típico es:
 
-```json
+```json id="1s8xdt"
 {
   "agent": 1,
   "input_json": {
@@ -907,7 +907,7 @@ La API no impone un shape único más allá de `input_json`, pero el caso típic
 
 También puede usarse un `tool_call` directo dentro de `input_json` si el runner lo soporta para ejecución directa de una tool:
 
-```json
+```json id="5ylzlx"
 {
   "agent": 1,
   "input_json": {
@@ -987,7 +987,7 @@ Las operaciones sobre runs ajenos deben responder `404`.
 
 # Ejemplo de integración en JavaScript
 
-```javascript
+```javascript id="08l7l2"
 const createRes = await fetch("/api/agents/runs/", {
   method: "POST",
   headers: {
@@ -1034,7 +1034,7 @@ console.log(trace);
 
 # Ejemplo de integración en Python
 
-```python
+```python id="13wgid"
 import requests
 
 BASE = "http://localhost:8000/api/agents"
@@ -1114,7 +1114,7 @@ Run inexistente o perteneciente a otro usuario.
 
 Error interno durante planificación, ejecución de tools o síntesis. En esos casos, el run puede quedar con:
 
-```json
+```json id="yhz2p5"
 {
   "status": "failed",
   "error": "mensaje de error"
@@ -1123,32 +1123,4 @@ Error interno durante planificación, ejecución de tools o síntesis. En esos c
 
 ---
 
-# Versionado
 
-Si más adelante versionas la API, la forma recomendada sería:
-
-```text
-/api/v1/agents/
-/api/v1/runs/
-```
-
-o mantener el prefijo funcional actual bajo un namespace versionado:
-
-```text
-/api/v1/agents/agents/
-/api/v1/agents/runs/
-```
-
----
-
-# Extensiones futuras razonables
-
-Posibles endpoints futuros:
-
-```text
-POST /api/agents/runs/{id}/cancel/
-GET  /api/agents/catalog/
-GET  /api/agents/tools/
-GET  /api/agents/layers/
-POST /api/agents/tools/run/
-```

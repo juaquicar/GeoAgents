@@ -4,130 +4,378 @@ Las tools son las **acciones que el agente puede ejecutar**.
 
 Cada tool:
 
-- recibe parámetros
-- ejecuta lógica GIS
-- devuelve resultados estructurados
-- genera facts para el synthesizer
+* recibe parámetros
+* ejecuta lógica GIS
+* devuelve resultados estructurados
+* puede alimentar verificaciones
+* aporta evidencia para la síntesis final
+
+En GeoAgents, las tools no se invocan libremente por texto. Se invocan a través de:
+
+* planner
+* validación de plan
+* runner
+* executor de tools
 
 ---
 
-# spatial.intersects
+# Contrato conceptual de una tool
+
+Una tool debería cumplir idealmente estas propiedades:
+
+* input claro y serializable
+* salida estructurada
+* comportamiento razonablemente determinista
+* semántica estable
+* errores comprensibles
+* buena integración con verificación y síntesis
+
+---
+
+# Herramientas actuales
+
+## spatial.intersects
 
 Detecta intersecciones espaciales entre capas.
 
 ### Uso
 
-````
-
+```text id="5sq9gf"
 point vs polygon
 line vs polygon
 polygon vs polygon
-
-````
+```
 
 ### Input
 
-```json
+```json id="6xx6mo"
 {
   "source_layer": "demo_points",
   "target_layer": "demo_polygons",
-  "bbox": {...},
+  "bbox": {
+    "west": -6.06,
+    "south": 37.32,
+    "east": -6.05,
+    "north": 37.33
+  },
   "limit": 20
 }
-````
+```
 
-### Output
+### Output conceptual
 
-```json
+```json id="d7fbas"
 {
-  "intersections": [
+  "source_layer": "demo_points",
+  "target_layer": "demo_polygons",
+  "count_total": 1,
+  "items": [
     {
-      "source": "A",
-      "target": "Zona 1",
-      "geometry": "POINT"
+      "source_name": "A",
+      "target_name": "Zona 1",
+      "intersection_geom_type": "POINT"
     }
   ]
 }
 ```
 
+### Cuándo usarla
+
+* detectar cruce o solape entre capas
+* validar relaciones espaciales explícitas
+* comprobar si existen intersecciones en un área
+
+### Nota semántica
+
+`spatial.intersects` demuestra intersección, no necesariamente contención.
+
 ---
 
-# spatial.nearby
+## spatial.nearby
 
 Busca elementos cercanos a un punto.
 
 ### Input
 
-```json
+```json id="lglvrt"
 {
   "layer": "demo_points",
-  "point": {"lon": -6.05, "lat": 37.33},
+  "point": {
+    "lon": -6.05,
+    "lat": 37.33
+  },
   "radius_m": 250
 }
 ```
 
-### Output
+### Output conceptual
 
+```json id="d3jbdn"
+{
+  "layer": "demo_points",
+  "point": {
+    "lon": -6.05,
+    "lat": 37.33
+  },
+  "count_total": 2,
+  "features": [
+    {
+      "id": 1,
+      "name": "P1",
+      "distance_m": 34.5,
+      "geometry_type": "Point"
+    }
+  ]
+}
 ```
-features cercanas
-distancias
-```
+
+### Cuándo usarla
+
+* proximidad
+* análisis de entorno inmediato
+* detección de activos cercanos a una posición
 
 ---
 
-# spatial.query_layer
+## spatial.query_layer
 
 Consulta directa de una capa.
 
 ### Input
 
-```json
+```json id="6wwvwr"
 {
   "layer": "demo_points",
-  "bbox": {...},
+  "bbox": {
+    "west": -6.06,
+    "south": 37.32,
+    "east": -6.05,
+    "north": 37.33
+  },
   "limit": 50
 }
 ```
 
-### Output
+### Output conceptual
 
+```json id="v9r56h"
+{
+  "layer": "demo_points",
+  "count_total": 3,
+  "features": [
+    {
+      "id": 1,
+      "name": "P1",
+      "geometry_type": "Point",
+      "centroid": {
+        "lon": -6.055,
+        "lat": 37.325
+      }
+    }
+  ]
+}
 ```
-features
-atributos
-estadísticas
-```
+
+### Cuándo usarla
+
+* exploración básica de una capa
+* obtención de features para alimentar otros pasos
+* consultas con bbox
+* workflows multi-step con referencias
 
 ---
 
-# spatial.context_pack
+## spatial.context_pack
 
-Genera un resumen espacial del área.
+Genera un resumen espacial agregado del área.
 
-Incluye:
+Incluye típicamente:
 
 * capas presentes
 * número de elementos
 * tipos de geometría
 * highlights
+* resumen ejecutivo
+
+### Cuándo usarla
+
+* contexto espacial general
+* respuestas explicativas
+* primer paso cuando el goal es muy amplio
+
+### Nota
+
+Es útil para contexto, pero no sustituye una tool topológica específica.
+
+---
+
+## spatial.summary
+
+Resumen agregado de capas dentro de un bbox.
+
+### Uso típico
+
+* inspección rápida del contenido espacial de una zona
+* métricas básicas por capa
+* recuentos y tipos geométricos
+
+---
+
+## spatial.network_trace
+
+Traza una ruta o recorrido sobre una red.
+
+### Input típico
+
+```json id="n4hl0g"
+{
+  "layer": "demo_lines",
+  "start_point": {
+    "lon": -6.055,
+    "lat": 37.325
+  },
+  "end_point": {
+    "lon": -6.056,
+    "lat": 37.326
+  }
+}
+```
+
+### Output conceptual
+
+```json id="l9tq13"
+{
+  "path_found": true,
+  "segments": [
+    {
+      "name": "seg-1"
+    }
+  ],
+  "node_count": 5,
+  "total_length_m": 120.5
+}
+```
+
+### Cuándo usarla
+
+* trazado de rutas sobre red
+* validación de conectividad
+* análisis técnico de recorridos
+
+### Ejemplo de verificación útil
+
+```json id="kyx3q4"
+{
+  "path": "data.path_found",
+  "equals": true
+}
+```
+
+---
+
+# Tools y verificación
+
+Desde Fase 1.5, una tool puede ejecutarse como parte de un step con:
+
+* `hypothesis`
+* `verification_target`
+* `success_criteria`
+
+Ejemplo:
+
+```json id="jep2h1"
+{
+  "id": "s1",
+  "type": "tool",
+  "name": "spatial.network_trace",
+  "hypothesis": "Existe una ruta válida entre ambos puntos",
+  "verification_target": "Comprobar si path_found es true",
+  "success_criteria": {
+    "path": "data.path_found",
+    "equals": true
+  },
+  "args": {
+    "layer": "demo_lines",
+    "start_point": {"lon": -6.055, "lat": 37.325},
+    "end_point": {"lon": -6.056, "lat": 37.326}
+  }
+}
+```
+
+---
+
+# Tools y referencias entre pasos
+
+Las tools pueden consumir outputs de pasos previos mediante referencias.
+
+Ejemplo:
+
+```json id="b68fuf"
+{
+  "id": "s2",
+  "type": "tool",
+  "name": "spatial.nearby",
+  "depends_on": ["s1"],
+  "args": {
+    "layer": "demo_points",
+    "point": "$step:s1.data.features.0.centroid",
+    "radius_m": 100
+  }
+}
+```
+
+Esto hace posible el razonamiento multi-tool real.
+
+---
+
+# Buenas prácticas de diseño de tools
+
+* devolver estructuras JSON estables
+* evitar output ambiguo
+* incluir campos útiles para síntesis y verificación
+* no mezclar presentación con datos
+* exponer nombres de capa y contadores cuando tenga sentido
+* mantener comportamiento determinista siempre que sea posible
+* usar mensajes de error útiles y breves
 
 ---
 
 # Añadir una nueva tool
 
-Pasos:
+Pasos recomendados:
 
-1️⃣ crear archivo en
+1. crear el archivo de implementación
+2. implementar la función principal
+3. registrar la tool en el registry
+4. exponerla en introspection si aplica
+5. añadir tests unitarios
+6. añadir heurística o soporte del planner/postprocessor
+7. añadir facts o soporte del synthesizer si hace falta
+8. documentarla en este documento y en ejemplos de uso
 
+Ruta habitual de implementación:
+
+```text id="8e6yqj"
+agents_gis/
 ```
-agents_gis/tools/
+
+Dependiendo del tipo de tool, puede vivir en archivos como:
+
+```text id="rx6nrf"
+tools_query.py
+tools_nearby.py
+tools_intersects.py
+tools_context.py
+tools_network_trace.py
 ```
 
-2️⃣ implementar función principal
+---
 
-3️⃣ registrar tool
+# Roadmap de tools
 
-4️⃣ añadir heurística en `plan_postprocessor`
+Evoluciones naturales previstas:
 
-5️⃣ añadir facts para synthesizer
-
-
+* `spatial.route_cost`
+* `spatial.network_service_area`
+* `spatial.cluster`
+* `spatial.visibility`

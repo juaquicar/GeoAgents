@@ -1,0 +1,15 @@
+{
+  "agent": 1,
+  "input_json": {
+    "goal": "Comprueba si existe una ruta de red válida entre dos puntos y, si no existe, inspecciona la red disponible en la zona",
+    "map_context": {
+      "bbox": {
+        "west": -6.06,
+        "south": 37.32,
+        "east": -6.05,
+        "north": 37.33
+      },
+      "zoom": 18
+    }
+  }
+}

@@ -6,6 +6,7 @@ from agents_gis.introspection import export_gis_layers_catalog
 
 from .client import chat_completion_json
 from .examples import PLANNER_EXAMPLES
+from examples.canonical_plans import CANONICAL_PLANNER_EXAMPLES
 from .plan_postprocessor import normalize_plan
 
 
@@ -103,8 +104,10 @@ def build_planner_user_prompt(
 
     tools_catalog = export_tools_catalog(allowlist)
     gis_layers_catalog = export_gis_layers_catalog()
-    filtered_examples = filter_planner_examples_by_allowlist(PLANNER_EXAMPLES, allowlist)
-
+    filtered_examples = filter_planner_examples_by_allowlist(
+        PLANNER_EXAMPLES + CANONICAL_PLANNER_EXAMPLES,
+        allowlist,
+    )
     extra = {
         "goal": goal,
         "map_context": map_context,
