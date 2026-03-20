@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from django.conf import settings
 from django.utils import timezone
 
+from .memory import persist_run_intelligence
 from .models import Run
 from .steps import log_step
 
@@ -219,6 +220,50 @@ def _evaluate_success_criteria(
             "reason": f"Could not evaluate success_criteria: {exc}",
         }
 
+
+
+
+def _summarize_verification(executed_outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    summary = {
+        "verified": [],
+        "refuted": [],
+        "inconclusive": [],
+        "not_evaluated": [],
+        "counts": {
+            "verified": 0,
+            "refuted": 0,
+            "inconclusive": 0,
+            "not_evaluated": 0,
+        },
+    }
+
+    for step in executed_outputs:
+        if step.get("type") != "tool":
+            continue
+
+        verification = step.get("verification") or {}
+        status = verification.get("status") or "not_evaluated"
+        if status not in summary:
+            status = "not_evaluated"
+
+        item = {
+            "id": step.get("id"),
+            "tool": step.get("name"),
+            "hypothesis": verification.get("hypothesis", ""),
+            "target": verification.get("target", ""),
+            "reason": verification.get("reason", ""),
+            "observed": verification.get("observed"),
+            "criteria": verification.get("criteria") or {},
+            "ok": step.get("ok"),
+            "error": step.get("error", ""),
+            "depends_on": step.get("depends_on", []),
+            "resolved_args": step.get("resolved_args", {}),
+            "attempt_count": step.get("attempt_count", 0),
+        }
+        summary[status].append(item)
+        summary["counts"][status] += 1
+
+    return summary
 
 def _build_step_verification(
     *,
@@ -498,6 +543,18 @@ def execute_run(run: Run) -> Run:
                 "tool": tool_name,
                 "data": tool_res.data,
                 "error": tool_res.error,
+                "verification_summary": {
+                    "verified": [],
+                    "refuted": [],
+                    "inconclusive": [],
+                    "not_evaluated": [],
+                    "counts": {
+                        "verified": 0,
+                        "refuted": 0,
+                        "inconclusive": 0,
+                        "not_evaluated": 0,
+                    },
+                },
             }
 
             log_step(
@@ -514,6 +571,7 @@ def execute_run(run: Run) -> Run:
             run.error = "" if tool_res.ok else (tool_res.error or "tool failed")
             run.ended_at = timezone.now()
             run.save(update_fields=["output_json", "final_text", "status", "error", "ended_at"])
+            persist_run_intelligence(run)
 
             log_step(
                 run,
@@ -631,6 +689,8 @@ def execute_run(run: Run) -> Run:
                 output_json={"final_text": final_text},
             )
 
+            verification_summary = _summarize_verification(executed_outputs)
+
             result = {
                 "ok": True,
                 "goal": goal,
@@ -638,6 +698,7 @@ def execute_run(run: Run) -> Run:
                 "plan_history": plan_history,
                 "replan_count": replan_count,
                 "executed_outputs": executed_outputs,
+                "verification_summary": verification_summary,
                 "final_text": final_text,
             }
 
@@ -655,6 +716,7 @@ def execute_run(run: Run) -> Run:
             run.error = ""
             run.ended_at = timezone.now()
             run.save(update_fields=["output_json", "final_text", "status", "error", "ended_at"])
+            persist_run_intelligence(run)
 
             log_step(
                 run,
@@ -669,6 +731,18 @@ def execute_run(run: Run) -> Run:
             "ok": True,
             "echo": payload,
             "agent_name": run.agent.name,
+            "verification_summary": {
+                "verified": [],
+                "refuted": [],
+                "inconclusive": [],
+                "not_evaluated": [],
+                "counts": {
+                    "verified": 0,
+                    "refuted": 0,
+                    "inconclusive": 0,
+                    "not_evaluated": 0,
+                },
+            },
         }
 
         log_step(
@@ -684,6 +758,7 @@ def execute_run(run: Run) -> Run:
         run.error = ""
         run.ended_at = timezone.now()
         run.save(update_fields=["output_json", "status", "error", "ended_at"])
+        persist_run_intelligence(run)
 
         log_step(
             run,
@@ -699,6 +774,7 @@ def execute_run(run: Run) -> Run:
         run.error = str(e)
         run.ended_at = timezone.now()
         run.save(update_fields=["status", "error", "ended_at"])
+        persist_run_intelligence(run)
 
         log_step(
             run,

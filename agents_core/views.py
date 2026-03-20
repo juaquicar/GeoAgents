@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions
+from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -19,16 +19,39 @@ class AgentViewSet(viewsets.ModelViewSet):
 
 
 class RunViewSet(viewsets.ModelViewSet):
-    queryset = Run.objects.select_related("agent").all().order_by("-id")
+    queryset = Run.objects.select_related("agent", "memory", "episode").all().order_by("-id")
     serializer_class = RunSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return (
-            Run.objects.select_related("agent")
+        qs = (
+            Run.objects.select_related("agent", "memory", "episode")
             .filter(user=self.request.user)
             .order_by("-id")
         )
+
+        params = self.request.query_params
+        tool = (params.get("tool") or "").strip().lower()
+        layer = (params.get("layer") or "").strip().lower()
+        analysis_type = (params.get("analysis_type") or "").strip().lower()
+        verification_status = (params.get("verification_status") or "").strip().lower()
+        domain = (params.get("domain") or "").strip().lower()
+        goal_signature = (params.get("goal_signature") or "").strip().lower()
+
+        if tool:
+            qs = qs.filter(memory__tools_search__icontains=tool)
+        if layer:
+            qs = qs.filter(memory__layers_search__icontains=layer)
+        if analysis_type:
+            qs = qs.filter(memory__analysis_types_search__icontains=analysis_type)
+        if verification_status:
+            qs = qs.filter(memory__verification_status=verification_status)
+        if domain:
+            qs = qs.filter(memory__domain=domain)
+        if goal_signature:
+            qs = qs.filter(memory__goal_signature__icontains=goal_signature)
+
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)

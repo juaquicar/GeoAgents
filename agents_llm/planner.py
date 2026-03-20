@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 
 from agents_tools.introspection import export_tools_catalog
 from agents_gis.introspection import export_gis_layers_catalog
+from agents_core.heuristics import build_planner_heuristics
 
 from .client import chat_completion_json
 from .examples import PLANNER_EXAMPLES
@@ -118,6 +119,7 @@ def build_planner_user_prompt(
         "tools_catalog": tools_catalog,
         "gis_layers_catalog": gis_layers_catalog,
         "planning_examples": filtered_examples,
+        "heuristics": build_planner_heuristics(run, payload),
     }
     if execution_context:
         extra["execution_context"] = execution_context

@@ -106,3 +106,126 @@ class RunStep(models.Model):
 
     def __str__(self):
         return f"RunStep#{self.pk} run={self.run.pk} idx={self.idx} kind={self.kind} name={self.name}"
+
+
+class RunMemory(models.Model):
+    """
+    Memoria operacional persistida de un run para búsqueda y debugging.
+    """
+
+    run = models.OneToOneField(Run, on_delete=models.CASCADE, related_name="memory")
+    normalized_goal = models.TextField(blank=True, default="")
+    goal_signature = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    domain = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    analysis_types = models.JSONField(default=list, blank=True)
+    analysis_types_search = models.TextField(blank=True, default="")
+    layers = models.JSONField(default=list, blank=True)
+    layers_search = models.TextField(blank=True, default="")
+    tools_used = models.JSONField(default=list, blank=True)
+    tools_search = models.TextField(blank=True, default="")
+    tool_sequence_signature = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+    final_plan = models.JSONField(default=dict, blank=True)
+    plan_history = models.JSONField(default=list, blank=True)
+    structured_results = models.JSONField(default=dict, blank=True)
+    verification_summary = models.JSONField(default=dict, blank=True)
+    verification_status = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    outcome = models.JSONField(default=dict, blank=True)
+    errors = models.JSONField(default=list, blank=True)
+    failure_modes = models.JSONField(default=list, blank=True)
+    failure_modes_search = models.TextField(blank=True, default="")
+    replans = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["domain", "verification_status"]),
+            models.Index(fields=["goal_signature", "tool_sequence_signature"]),
+        ]
+
+    def __str__(self):
+        return f"RunMemory(run={self.run_id}, domain={self.domain}, verification={self.verification_status})"
+
+
+class Episode(models.Model):
+    """
+    Episodio reutilizable extraído de un run.
+    """
+
+    run = models.OneToOneField(Run, on_delete=models.CASCADE, related_name="episode")
+    normalized_goal = models.TextField(blank=True, default="")
+    goal_signature = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    domain = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    analysis_types = models.JSONField(default=list, blank=True)
+    tools_used = models.JSONField(default=list, blank=True)
+    tool_sequence = models.JSONField(default=list, blank=True)
+    tool_sequence_signature = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+    outcome_status = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    verification_status = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    success = models.BooleanField(default=False)
+    failure_mode = models.CharField(max_length=255, blank=True, default="")
+    failure_modes = models.JSONField(default=list, blank=True)
+    recommended_strategy = models.TextField(blank=True, default="")
+    verification_summary = models.JSONField(default=dict, blank=True)
+    evidence = models.JSONField(default=dict, blank=True)
+    replan_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["goal_signature", "domain"]),
+            models.Index(fields=["tool_sequence_signature", "success"]),
+        ]
+
+    def __str__(self):
+        return f"Episode(run={self.run_id}, goal_signature={self.goal_signature}, success={self.success})"
+
+
+class EpisodePattern(models.Model):
+    """
+    Agregado de episodios similares para sugerir estrategias recurrentes.
+    """
+
+    goal_signature = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    domain = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    tool_sequence_signature = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+    tool_sequence = models.JSONField(default=list, blank=True)
+    sample_size = models.PositiveIntegerField(default=0)
+    success_count = models.PositiveIntegerField(default=0)
+    failure_count = models.PositiveIntegerField(default=0)
+    success_rate = models.FloatField(default=0.0)
+    last_outcome_status = models.CharField(max_length=32, blank=True, default="")
+    last_failure_mode = models.CharField(max_length=255, blank=True, default="")
+    recommended_strategy = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("goal_signature", "domain", "tool_sequence_signature")]
+        indexes = [
+            models.Index(fields=["domain", "success_rate"]),
+            models.Index(fields=["goal_signature", "success_rate"]),
+        ]
+
+    def __str__(self):
+        return (
+            "EpisodePattern("
+            f"goal_signature={self.goal_signature}, domain={self.domain}, "
+            f"success_rate={self.success_rate:.2f})"
+        )

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Agent, Run, RunStep
+from .models import Agent, Episode, Run, RunMemory, RunStep
 
 
 class AgentSerializer(serializers.ModelSerializer):
@@ -18,12 +18,80 @@ class AgentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at"]
 
 
+class RunMemorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RunMemory
+        fields = [
+            "normalized_goal",
+            "goal_signature",
+            "domain",
+            "analysis_types",
+            "layers",
+            "tools_used",
+            "tool_sequence_signature",
+            "final_plan",
+            "plan_history",
+            "structured_results",
+            "verification_summary",
+            "verification_status",
+            "outcome",
+            "errors",
+            "failure_modes",
+            "replans",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class EpisodeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Episode
+        fields = [
+            "normalized_goal",
+            "goal_signature",
+            "domain",
+            "analysis_types",
+            "tools_used",
+            "tool_sequence",
+            "tool_sequence_signature",
+            "outcome_status",
+            "verification_status",
+            "success",
+            "failure_mode",
+            "failure_modes",
+            "recommended_strategy",
+            "verification_summary",
+            "evidence",
+            "replan_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+def _safe_memory(obj):
+    try:
+        return obj.memory
+    except Run.memory.RelatedObjectDoesNotExist:
+        return None
+
+
+def _safe_episode(obj):
+    try:
+        return obj.episode
+    except Run.episode.RelatedObjectDoesNotExist:
+        return None
+
+
 class RunSerializer(serializers.ModelSerializer):
     agent_name = serializers.CharField(source="agent.name", read_only=True)
     verification_summary = serializers.SerializerMethodField()
     replan_count = serializers.SerializerMethodField()
     plan_history = serializers.SerializerMethodField()
     executed_outputs = serializers.SerializerMethodField()
+    run_memory = serializers.SerializerMethodField()
+    episode = serializers.SerializerMethodField()
 
     class Meta:
         model = Run
@@ -41,6 +109,8 @@ class RunSerializer(serializers.ModelSerializer):
             "replan_count",
             "plan_history",
             "executed_outputs",
+            "run_memory",
+            "episode",
             "created_at",
             "started_at",
             "ended_at",
@@ -56,6 +126,8 @@ class RunSerializer(serializers.ModelSerializer):
             "replan_count",
             "plan_history",
             "executed_outputs",
+            "run_memory",
+            "episode",
             "created_at",
             "started_at",
             "ended_at",
@@ -113,7 +185,23 @@ class RunSerializer(serializers.ModelSerializer):
         raw_steps = self._output(obj).get("executed_outputs", [])
         return self._normalize_executed_outputs(raw_steps)
 
+    def get_run_memory(self, obj):
+        memory = _safe_memory(obj)
+        if not memory:
+            return None
+        return RunMemorySerializer(memory).data
+
+    def get_episode(self, obj):
+        episode = _safe_episode(obj)
+        if not episode:
+            return None
+        return EpisodeSerializer(episode).data
+
     def get_verification_summary(self, obj):
+        memory = _safe_memory(obj)
+        if memory and memory.verification_summary:
+            return memory.verification_summary
+
         executed_outputs = self.get_executed_outputs(obj)
 
         summary = {
@@ -249,8 +337,10 @@ class RunTraceSerializer(serializers.ModelSerializer):
         raw_executed_outputs = output.get("executed_outputs", [])
         executed_outputs = self._normalize_executed_outputs(raw_executed_outputs)
         plan_history = output.get("plan_history", [])
+        memory = _safe_memory(obj)
+        episode = _safe_episode(obj)
 
-        verification = {
+        verification = (memory.verification_summary if memory else None) or {
             "verified": [],
             "refuted": [],
             "inconclusive": [],
@@ -273,30 +363,6 @@ class RunTraceSerializer(serializers.ModelSerializer):
             total_attempts += step.get("attempt_count", 0) or 0
             total_latency_ms += step.get("latency_ms_total", 0) or 0
 
-            v = step.get("verification") or {}
-            status = v.get("status") or "not_evaluated"
-            if status not in verification:
-                status = "not_evaluated"
-
-            item = {
-                "id": step.get("id"),
-                "tool": step.get("name"),
-                "ok": step.get("ok"),
-                "hypothesis": v.get("hypothesis") or "",
-                "target": v.get("target") or "",
-                "criteria": v.get("criteria") or {},
-                "observed": v.get("observed"),
-                "reason": v.get("reason") or "",
-                "depends_on": step.get("depends_on", []),
-                "resolved_args": step.get("resolved_args", {}),
-                "attempt_count": step.get("attempt_count", 0),
-                "latency_ms": step.get("latency_ms", 0),
-                "latency_ms_total": step.get("latency_ms_total", 0),
-                "error": step.get("error", ""),
-            }
-            verification[status].append(item)
-            verification["counts"][status] += 1
-
         return {
             "goal": (obj.input_json or {}).get("goal", ""),
             "plan": output.get("plan", {}),
@@ -304,6 +370,8 @@ class RunTraceSerializer(serializers.ModelSerializer):
             "replan_count": output.get("replan_count", 0),
             "executed_outputs": executed_outputs,
             "verification_summary": verification,
+            "run_memory": RunMemorySerializer(memory).data if memory else None,
+            "episode": EpisodeSerializer(episode).data if episode else None,
             "stats": {
                 "tool_steps_executed": len(
                     [s for s in executed_outputs if s.get("type") == "tool"]
