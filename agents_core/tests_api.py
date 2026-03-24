@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
+from types import SimpleNamespace
 
+from agents_core.runner import execute_run
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework.authtoken.models import Token
@@ -669,3 +671,242 @@ class AgentsCoreApiTests(APITestCase):
         self.assertIsNotNone(response.data["episode"])
         self.assertEqual(response.data["run_memory"]["goal_signature"], "ejecuta|run")
         self.assertEqual(response.data["episode"]["outcome_status"], "succeeded")
+
+
+@patch("agents_core.runner.synthesize_run", return_value="síntesis refutada")
+@patch("agents_core.runner.invoke_tool")
+@patch("agents_core.runner.plan_run")
+def test_full_execute_flow_persists_refuted_memory_and_episode(
+    self,
+    mock_plan_run,
+    mock_invoke_tool,
+    _mock_synthesize_run,
+):
+    run = Run.objects.create(
+        agent=self.agent,
+        user=self.user,
+        input_json={
+            "goal": "Traza una ruta de red entre dos puntos desconectados",
+            "map_context": {
+                "bbox": {
+                    "west": -6.06,
+                    "south": 37.32,
+                    "east": -6.05,
+                    "north": 37.33,
+                },
+                "zoom": 18,
+            },
+            "trace_context": {
+                "start_point": {"lon": -6.06, "lat": 37.3201},
+                "end_point": {"lon": -6.051, "lat": 37.3299},
+            },
+        },
+    )
+
+    # Primera planificación e intento inicial
+    initial_plan = {
+        "steps": [
+            {
+                "id": "s1",
+                "type": "tool",
+                "name": "spatial.network_trace",
+                "args": {
+                    "layer": "demo_lines",
+                    "start_point": {"lon": -6.06, "lat": 37.3201},
+                    "end_point": {"lon": -6.051, "lat": 37.3299},
+                    "bbox": {
+                        "west": -6.06,
+                        "south": 37.32,
+                        "east": -6.05,
+                        "north": 37.33,
+                    },
+                    "include_geom": True,
+                    "max_snap_distance_m": 250.0,
+                },
+                "required": True,
+                "on_fail": "continue",
+                "hypothesis": "Existe una ruta de red válida entre ambos puntos",
+                "verification_target": "Comprobar si path_found es true",
+                "success_criteria": {
+                    "path": "data.path_found",
+                    "equals": True,
+                },
+                "timeout_s": 0,
+                "max_retries": 1,
+                "retry_backoff_s": 0,
+                "can_replan": True,
+                "depends_on": [],
+            },
+            {"type": "final"},
+        ]
+    }
+
+    # Replan: en este caso sigue proponiendo el mismo tool, pero queda registrado
+    replanned = {
+        "steps": [
+            {
+                "id": "s1",
+                "type": "tool",
+                "name": "spatial.network_trace",
+                "args": {
+                    "layer": "demo_lines",
+                    "start_point": {"lon": -6.06, "lat": 37.3201},
+                    "end_point": {"lon": -6.051, "lat": 37.3299},
+                    "bbox": {
+                        "west": -6.06,
+                        "south": 37.32,
+                        "east": -6.05,
+                        "north": 37.33,
+                    },
+                    "include_geom": True,
+                    "max_snap_distance_m": 250.0,
+                },
+                "required": True,
+                "on_fail": "continue",
+                "hypothesis": "Existe una ruta de red válida entre ambos puntos",
+                "verification_target": "Comprobar si path_found es true",
+                "success_criteria": {
+                    "path": "data.path_found",
+                    "equals": True,
+                },
+                "timeout_s": 0,
+                "max_retries": 1,
+                "retry_backoff_s": 0,
+                "can_replan": True,
+                "depends_on": [],
+            },
+            {"type": "final"},
+        ]
+    }
+
+    mock_plan_run.side_effect = [initial_plan, replanned]
+
+    mock_invoke_tool.return_value = (
+        _tool_ok(
+            {
+                "layer": "demo_lines",
+                "path_found": False,
+                "reason": "snap_distance_exceeded",
+                "start_point": {"lon": -6.06, "lat": 37.3201},
+                "end_point": {"lon": -6.051, "lat": 37.3299},
+                "start_snap_m": 109.40,
+                "end_snap_m": 417.54,
+                "segment_ids": [],
+                "segment_names": [],
+                "total_length_m": 0.0,
+                "node_count": 0,
+                "include_geom": True,
+            }
+        ),
+        19,
+    )
+
+    execute_url = reverse("runs-execute", kwargs={"pk": run.id})
+    response = self.client.post(execute_url, {}, format="json")
+
+    self.assertEqual(response.status_code, 200)
+    self.assertEqual(response.data["status"], "succeeded")
+    self.assertEqual(response.data["verification_summary"]["counts"]["refuted"], 1)
+    self.assertEqual(response.data["replan_count"], 1)
+
+    step = response.data["executed_outputs"][0]
+    self.assertEqual(step["name"], "spatial.network_trace")
+    self.assertEqual(step["verification"]["status"], "refuted")
+    self.assertEqual(step["verification"]["observed"], False)
+    self.assertEqual(step["resolved_args"]["start_point"]["lon"], -6.06)
+    self.assertEqual(step["resolved_args"]["end_point"]["lon"], -6.051)
+
+    run.refresh_from_db()
+    self.assertIsNotNone(run.memory)
+    self.assertIsNotNone(run.episode)
+
+    self.assertEqual(run.memory.verification_status, "refuted")
+    self.assertEqual(run.memory.tools_used, ["spatial.network_trace"])
+    self.assertIn("verification_refuted", run.memory.failure_modes)
+    self.assertEqual(run.memory.outcome["replan_count"], 1)
+
+    self.assertEqual(run.episode.verification_status, "refuted")
+    self.assertFalse(run.episode.success)
+    self.assertEqual(run.episode.failure_mode, "verification_refuted")
+    self.assertEqual(run.episode.tool_sequence, ["spatial.network_trace"])
+    self.assertEqual(run.episode.replan_count, 1)
+
+    list_url = reverse("runs-list")
+    filtered = self.client.get(list_url, {"verification_status": "refuted"})
+    self.assertEqual(filtered.status_code, 200)
+    ids = [item["id"] for item in filtered.data]
+    self.assertIn(run.id, ids)
+
+
+
+@patch("agents_core.runner.invoke_tool")
+def test_direct_tool_call_persists_refuted_memory_and_episode(
+    self,
+    mock_invoke_tool,
+):
+    run = Run.objects.create(
+        agent=self.agent,
+        user=self.user,
+        input_json={
+            "goal": "forzar trace refutado",
+            "tool_call": {
+                "name": "spatial.network_trace",
+                "args": {
+                    "layer": "demo_lines",
+                    "start_point": {"lon": -6.06, "lat": 37.3201},
+                    "end_point": {"lon": -6.051, "lat": 37.3299},
+                    "bbox": {
+                        "west": -6.06,
+                        "south": 37.32,
+                        "east": -6.05,
+                        "north": 37.33,
+                    },
+                    "include_geom": True,
+                    "max_snap_distance_m": 20,
+                },
+            },
+        },
+    )
+
+    mock_invoke_tool.return_value = (
+        _tool_ok(
+            {
+                "layer": "demo_lines",
+                "path_found": False,
+                "reason": "snap_distance_exceeded",
+                "start_point": {"lon": -6.06, "lat": 37.3201},
+                "end_point": {"lon": -6.051, "lat": 37.3299},
+                "start_snap_m": 109.40,
+                "end_snap_m": 417.54,
+                "segment_ids": [],
+                "segment_names": [],
+                "total_length_m": 0.0,
+                "node_count": 0,
+                "include_geom": True,
+            }
+        ),
+        10,
+    )
+
+    execute_url = reverse("runs-execute", kwargs={"pk": run.id})
+    response = self.client.post(execute_url, {}, format="json")
+
+    self.assertEqual(response.status_code, 200)
+    self.assertEqual(response.data["status"], "succeeded")
+    self.assertEqual(response.data["verification_summary"]["counts"]["refuted"], 1)
+
+    step = response.data["executed_outputs"][0]
+    self.assertEqual(step["name"], "spatial.network_trace")
+    self.assertEqual(step["verification"]["status"], "refuted")
+    self.assertEqual(step["verification"]["observed"], False)
+    self.assertEqual(step["resolved_args"]["max_snap_distance_m"], 20)
+
+    run.refresh_from_db()
+    self.assertEqual(run.memory.verification_status, "refuted")
+    self.assertEqual(run.memory.tools_used, ["spatial.network_trace"])
+    self.assertIn("verification_refuted", run.memory.failure_modes)
+
+    self.assertEqual(run.episode.verification_status, "refuted")
+    self.assertFalse(run.episode.success)
+    self.assertEqual(run.episode.failure_mode, "verification_refuted")
+    self.assertEqual(run.episode.tool_sequence, ["spatial.network_trace"])

@@ -6,6 +6,8 @@ La API de GeoAgents expone el núcleo del framework de agentes mediante recursos
 * ejecuciones (`runs`)
 * trazas de ejecución (`trace`)
 * pasos persistidos (`steps`)
+* memoria operacional persistida dentro de cada run (`run_memory`)
+* memoria episódica derivada (`episode`)
 
 Permite:
 
@@ -15,6 +17,8 @@ Permite:
 * inspeccionar el resultado final
 * revisar el detalle de pasos persistidos
 * auditar el plan, los replans, las verificaciones y los tiempos de ejecución
+* recuperar memoria estructurada de ejecuciones anteriores
+* filtrar runs por estado de verificación, dominio, herramienta, capa o tipo de análisis
 
 La API está pensada para integrarse con:
 
@@ -23,6 +27,7 @@ La API está pensada para integrarse con:
 * backends
 * scripts de automatización
 * herramientas de debugging y observabilidad
+* pipelines de evaluación y benchmarking de agentes
 
 ---
 
@@ -30,7 +35,7 @@ La API está pensada para integrarse con:
 
 El flujo real de ejecución es:
 
-```text id="p6fx8m"
+```text
 Client
 │
 ▼
@@ -50,12 +55,15 @@ Verification / optional replan
 │
 ▼
 Synthesizer
+│
+▼
+Persistent run intelligence
 ```
 
 En términos de ciclo lógico del agente:
 
-```text id="6w2h0j"
-plan -> execute -> verify -> optional replan -> synthesize
+```text
+plan -> execute -> verify -> optional replan -> synthesize -> persist memory
 ```
 
 ---
@@ -64,15 +72,23 @@ plan -> execute -> verify -> optional replan -> synthesize
 
 Ejemplo de prefijo:
 
-```text id="6zxyr3"
+```text
 /api/agents/
 ```
 
 Con el router actual, los recursos publicados son:
 
-```text id="8wbctw"
+```text
 /api/agents/agents/
 /api/agents/runs/
+```
+
+Endpoints derivados relevantes:
+
+```text
+/api/agents/runs/{id}/execute/
+/api/agents/runs/{id}/steps/
+/api/agents/runs/{id}/trace/
 ```
 
 ---
@@ -89,7 +105,7 @@ Según la configuración del proyecto, puede usarse:
 
 Ejemplo con token DRF:
 
-```text id="gtaq9n"
+```text
 Authorization: Token <token>
 ```
 
@@ -132,6 +148,8 @@ Campos relevantes:
 * `replan_count`
 * `plan_history`
 * `executed_outputs`
+* `run_memory`
+* `episode`
 * `created_at`
 * `started_at`
 * `ended_at`
@@ -159,7 +177,7 @@ Campos relevantes:
 
 Un run puede pasar por estos estados:
 
-```text id="1x4fkr"
+```text
 queued
 running
 succeeded
@@ -168,19 +186,29 @@ failed
 
 En la implementación actual, un run recién creado nace en `queued`.
 
+Importante: `status = succeeded` significa que la ejecución técnica del run ha concluido correctamente. El resultado analítico real de la hipótesis se expresa mediante:
+
+* `verification_summary`
+* `run_memory.verification_status`
+* `episode.verification_status`
+* `episode.success`
+* `failure_modes`
+
+Es perfectamente válido que un run termine en `succeeded` y, al mismo tiempo, su hipótesis principal quede `refuted`.
+
 ---
 
 # Endpoints
 
 ## 1) Listar agentes
 
-```http id="6fjlwm"
+```http
 GET /api/agents/agents/
 ```
 
 ### Response
 
-```json id="nsp8gg"
+```json
 [
   {
     "id": 1,
@@ -204,13 +232,13 @@ GET /api/agents/agents/
 
 ## 2) Obtener un agente
 
-```http id="kay02m"
+```http
 GET /api/agents/agents/{id}/
 ```
 
 ### Response
 
-```json id="b3ur0w"
+```json
 {
   "id": 1,
   "name": "geo-agent",
@@ -234,13 +262,13 @@ GET /api/agents/agents/{id}/
 
 Crea el registro de ejecución. No ejecuta todavía el agente.
 
-```http id="uwo93w"
+```http
 POST /api/agents/runs/
 ```
 
 ### Request
 
-```json id="8vkq9w"
+```json
 {
   "agent": 1,
   "input_json": {
@@ -253,6 +281,16 @@ POST /api/agents/runs/
         "north": 37.33
       },
       "zoom": 18
+    },
+    "trace_context": {
+      "start_point": {
+        "lon": -6.06,
+        "lat": 37.3201
+      },
+      "end_point": {
+        "lon": -6.051,
+        "lat": 37.3299
+      }
     }
   }
 }
@@ -260,7 +298,7 @@ POST /api/agents/runs/
 
 ### Response
 
-```json id="xh4jmt"
+```json
 {
   "id": 42,
   "agent": 1,
@@ -277,9 +315,19 @@ POST /api/agents/runs/
         "north": 37.33
       },
       "zoom": 18
+    },
+    "trace_context": {
+      "start_point": {
+        "lon": -6.06,
+        "lat": 37.3201
+      },
+      "end_point": {
+        "lon": -6.051,
+        "lat": 37.3299
+      }
     }
   },
-  "output_json": null,
+  "output_json": {},
   "final_text": "",
   "error": "",
   "verification_summary": {
@@ -297,6 +345,8 @@ POST /api/agents/runs/
   "replan_count": 0,
   "plan_history": [],
   "executed_outputs": [],
+  "run_memory": null,
+  "episode": null,
   "created_at": "2026-03-20T13:00:00+01:00",
   "started_at": null,
   "ended_at": null
@@ -307,15 +357,33 @@ POST /api/agents/runs/
 
 ## 4) Listar runs del usuario autenticado
 
-```http id="2x5831"
+```http
 GET /api/agents/runs/
 ```
 
 Este endpoint devuelve únicamente los runs del usuario autenticado.
 
+También soporta filtros de memoria persistida. Los más útiles son:
+
+* `verification_status`
+* `domain`
+* `tool`
+* `layer`
+* `analysis_type`
+
+Ejemplos:
+
+```http
+GET /api/agents/runs/?verification_status=refuted
+GET /api/agents/runs/?tool=spatial.network_trace
+GET /api/agents/runs/?domain=network
+GET /api/agents/runs/?analysis_type=network_trace
+GET /api/agents/runs/?layer=demo_lines
+```
+
 ### Response
 
-```json id="ezl9ce"
+```json
 [
   {
     "id": 42,
@@ -336,8 +404,8 @@ Este endpoint devuelve únicamente los runs del usuario autenticado.
         {
           "id": "s1",
           "tool": "spatial.network_trace",
-          "hypothesis": "",
-          "target": "",
+          "hypothesis": "Existe una ruta de red válida entre ambos puntos",
+          "target": "Comprobar si path_found es true",
           "reason": "Evaluated equals on path 'data.path_found'.",
           "observed": true,
           "criteria": {
@@ -361,6 +429,37 @@ Este endpoint devuelve únicamente los runs del usuario autenticado.
     "replan_count": 0,
     "plan_history": [],
     "executed_outputs": [],
+    "run_memory": {
+      "normalized_goal": "comprueba si existe una ruta de red válida entre dos puntos",
+      "goal_signature": "comprueba|ruta|red|valida|puntos",
+      "domain": "network",
+      "analysis_types": [
+        "network_trace",
+        "verification_driven"
+      ],
+      "layers": [
+        "demo_lines"
+      ],
+      "tools_used": [
+        "spatial.network_trace"
+      ],
+      "tool_sequence_signature": "spatial.network_trace",
+      "verification_status": "verified",
+      "failure_modes": []
+    },
+    "episode": {
+      "domain": "network",
+      "tools_used": [
+        "spatial.network_trace"
+      ],
+      "tool_sequence": [
+        "spatial.network_trace"
+      ],
+      "verification_status": "verified",
+      "success": true,
+      "failure_mode": "",
+      "failure_modes": []
+    },
     "created_at": "2026-03-20T13:00:00+01:00",
     "started_at": "2026-03-20T13:00:01+01:00",
     "ended_at": "2026-03-20T13:00:02+01:00"
@@ -372,15 +471,15 @@ Este endpoint devuelve únicamente los runs del usuario autenticado.
 
 ## 5) Obtener un run
 
-```http id="u7pke1"
+```http
 GET /api/agents/runs/{id}/
 ```
 
-Devuelve el run serializado con resumen de verificaciones, plan history y outputs ejecutados.
+Devuelve el run serializado con resultado final, verificaciones, planes, outputs ejecutados, memoria persistida y episodio derivado.
 
 ### Response
 
-```json id="a0sz6r"
+```json
 {
   "id": 42,
   "agent": 1,
@@ -413,8 +512,8 @@ Devuelve el run serializado con resumen de verificaciones, plan history y output
       {
         "id": "s1",
         "tool": "spatial.network_trace",
-        "hypothesis": "",
-        "target": "",
+        "hypothesis": "Existe una ruta de red válida entre ambos puntos",
+        "target": "Comprobar si path_found es true",
         "reason": "Evaluated equals on path 'data.path_found'.",
         "observed": true,
         "criteria": {
@@ -468,6 +567,94 @@ Devuelve el run serializado con resumen de verificaciones, plan history y output
       }
     }
   ],
+  "run_memory": {
+    "normalized_goal": "comprueba si existe una ruta de red válida entre dos puntos",
+    "goal_signature": "comprueba|ruta|red|valida|puntos",
+    "domain": "network",
+    "analysis_types": [
+      "network_trace",
+      "verification_driven"
+    ],
+    "layers": [
+      "demo_lines"
+    ],
+    "tools_used": [
+      "spatial.network_trace"
+    ],
+    "tool_sequence_signature": "spatial.network_trace",
+    "final_plan": {
+      "steps": [
+        {
+          "id": "s1",
+          "type": "tool",
+          "name": "spatial.network_trace"
+        },
+        {
+          "type": "final"
+        }
+      ]
+    },
+    "plan_history": [
+      {
+        "label": "initial",
+        "steps": [
+          {
+            "id": "s1",
+            "type": "tool",
+            "name": "spatial.network_trace"
+          },
+          {
+            "type": "final"
+          }
+        ]
+      }
+    ],
+    "structured_results": {
+      "tool_count": 1,
+      "successful_tools": 1,
+      "failed_tools": 0
+    },
+    "verification_summary": {
+      "counts": {
+        "verified": 1,
+        "refuted": 0,
+        "inconclusive": 0,
+        "not_evaluated": 0
+      }
+    },
+    "verification_status": "verified",
+    "outcome": {
+      "status": "succeeded",
+      "ok": true,
+      "replan_count": 0,
+      "tool_steps_executed": 1
+    },
+    "errors": [],
+    "failure_modes": [],
+    "replans": []
+  },
+  "episode": {
+    "normalized_goal": "comprueba si existe una ruta de red válida entre dos puntos",
+    "goal_signature": "comprueba|ruta|red|valida|puntos",
+    "domain": "network",
+    "analysis_types": [
+      "network_trace",
+      "verification_driven"
+    ],
+    "tools_used": [
+      "spatial.network_trace"
+    ],
+    "tool_sequence": [
+      "spatial.network_trace"
+    ],
+    "tool_sequence_signature": "spatial.network_trace",
+    "outcome_status": "succeeded",
+    "verification_status": "verified",
+    "success": true,
+    "failure_mode": "",
+    "failure_modes": [],
+    "recommended_strategy": "Secuencia efectiva detectada: spatial.network_trace. Próximo arranque recomendado: spatial.network_trace."
+  },
   "created_at": "2026-03-20T13:00:00+01:00",
   "started_at": "2026-03-20T13:00:01+01:00",
   "ended_at": "2026-03-20T13:00:02+01:00"
@@ -480,7 +667,7 @@ Devuelve el run serializado con resumen de verificaciones, plan history y output
 
 Lanza la ejecución del run ya creado.
 
-```http id="5z9jef"
+```http
 POST /api/agents/runs/{id}/execute/
 ```
 
@@ -488,16 +675,15 @@ POST /api/agents/runs/{id}/execute/
 
 Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecución.
 
-```json id="q0j9gw"
+Ejemplo resumido de caso verificado:
+
+```json
 {
   "id": 42,
   "agent": 1,
   "agent_name": "geo-agent",
   "user": 7,
   "status": "succeeded",
-  "input_json": {
-    "goal": "Comprueba si existe una ruta de red válida entre dos puntos"
-  },
   "output_json": {
     "ok": true,
     "goal": "Comprueba si existe una ruta de red válida entre dos puntos",
@@ -553,12 +739,7 @@ Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecuci
         "name": "spatial.network_trace",
         "ok": true,
         "data": {
-          "path_found": true,
-          "segments": [
-            {
-              "name": "seg-1"
-            }
-          ]
+          "path_found": true
         },
         "error": "",
         "required": true,
@@ -583,7 +764,7 @@ Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecuci
         },
         "verification": {
           "status": "verified",
-          "target": "",
+          "target": "Comprobar si path_found es true",
           "criteria": {
             "path": "data.path_found",
             "equals": true
@@ -592,25 +773,33 @@ Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecuci
           "reason": "Evaluated equals on path 'data.path_found'."
         }
       }
-    ]
+    ],
+    "verification_summary": {
+      "verified": [
+        {
+          "id": "s1",
+          "tool": "spatial.network_trace",
+          "observed": true
+        }
+      ],
+      "refuted": [],
+      "inconclusive": [],
+      "not_evaluated": [],
+      "counts": {
+        "verified": 1,
+        "refuted": 0,
+        "inconclusive": 0,
+        "not_evaluated": 0
+      }
+    }
   },
   "final_text": "Se encontró una ruta válida.",
-  "error": "",
   "verification_summary": {
     "verified": [
       {
         "id": "s1",
         "tool": "spatial.network_trace",
-        "hypothesis": "",
-        "target": "",
-        "reason": "Evaluated equals on path 'data.path_found'.",
-        "observed": true,
-        "criteria": {
-          "path": "data.path_found",
-          "equals": true
-        },
-        "ok": true,
-        "error": ""
+        "observed": true
       }
     ],
     "refuted": [],
@@ -624,41 +813,95 @@ Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecuci
     }
   },
   "replan_count": 0,
-  "plan_history": [
-    {
-      "label": "initial",
-      "steps": [
+  "run_memory": {
+    "verification_status": "verified",
+    "tools_used": [
+      "spatial.network_trace"
+    ]
+  },
+  "episode": {
+    "verification_status": "verified",
+    "success": true
+  }
+}
+```
+
+Ejemplo resumido de caso refutado con replan registrado:
+
+```json
+{
+  "id": 99,
+  "agent": 1,
+  "agent_name": "geo-agent",
+  "user": 7,
+  "status": "succeeded",
+  "output_json": {
+    "ok": true,
+    "goal": "Traza una ruta de red entre dos puntos desconectados",
+    "replan_count": 1,
+    "executed_outputs": [
+      {
+        "id": "s1",
+        "type": "tool",
+        "name": "spatial.network_trace",
+        "ok": true,
+        "data": {
+          "path_found": false,
+          "reason": "snap_distance_exceeded",
+          "start_snap_m": 109.40,
+          "end_snap_m": 417.54
+        },
+        "verification": {
+          "status": "refuted",
+          "target": "Comprobar si path_found es true",
+          "criteria": {
+            "path": "data.path_found",
+            "equals": true
+          },
+          "observed": false,
+          "reason": "Evaluated equals on path 'data.path_found'."
+        }
+      }
+    ],
+    "verification_summary": {
+      "verified": [],
+      "refuted": [
         {
           "id": "s1",
-          "type": "tool",
-          "name": "spatial.network_trace"
-        },
-        {
-          "type": "final"
+          "tool": "spatial.network_trace",
+          "observed": false
         }
-      ]
-    }
-  ],
-  "executed_outputs": [
-    {
-      "id": "s1",
-      "type": "tool",
-      "name": "spatial.network_trace",
-      "ok": true,
-      "error": "",
-      "attempt_count": 1,
-      "latency_ms": 10,
-      "latency_ms_total": 10,
-      "verification": {
-        "status": "verified",
-        "observed": true,
-        "reason": "Evaluated equals on path 'data.path_found'."
+      ],
+      "inconclusive": [],
+      "not_evaluated": [],
+      "counts": {
+        "verified": 0,
+        "refuted": 1,
+        "inconclusive": 0,
+        "not_evaluated": 0
       }
     }
-  ],
-  "created_at": "2026-03-20T13:00:00+01:00",
-  "started_at": "2026-03-20T13:00:01+01:00",
-  "ended_at": "2026-03-20T13:00:02+01:00"
+  },
+  "run_memory": {
+    "verification_status": "refuted",
+    "failure_modes": [
+      "verification_refuted"
+    ],
+    "replans": [
+      {
+        "label": "replan_1"
+      }
+    ]
+  },
+  "episode": {
+    "verification_status": "refuted",
+    "success": false,
+    "failure_mode": "verification_refuted",
+    "failure_modes": [
+      "verification_refuted"
+    ],
+    "replan_count": 1
+  }
 }
 ```
 
@@ -666,7 +909,7 @@ Devuelve el mismo serializer enriquecido del run, ya actualizado tras la ejecuci
 
 ## 7) Obtener pasos persistidos de un run
 
-```http id="0h2k4f"
+```http
 GET /api/agents/runs/{id}/steps/
 ```
 
@@ -674,7 +917,7 @@ Devuelve los `RunStep` guardados en base de datos.
 
 ### Response
 
-```json id="mlkimh"
+```json
 [
   {
     "id": 1,
@@ -726,7 +969,7 @@ Devuelve los `RunStep` guardados en base de datos.
 
 ## 8) Obtener trace completo de un run
 
-```http id="cs1l89"
+```http
 GET /api/agents/runs/{id}/trace/
 ```
 
@@ -742,10 +985,12 @@ Incluye:
 * outputs ejecutados
 * resumen de verificaciones
 * métricas agregadas
+* memoria persistida del run
+* episodio derivado
 
 ### Response
 
-```json id="w2rjlwm"
+```json
 {
   "id": 42,
   "agent": 1,
@@ -835,8 +1080,8 @@ Incluye:
           "id": "s1",
           "tool": "spatial.network_trace",
           "ok": true,
-          "hypothesis": "",
-          "target": "",
+          "hypothesis": "Existe una ruta de red válida entre ambos puntos",
+          "target": "Comprobar si path_found es true",
           "criteria": {
             "path": "data.path_found",
             "equals": true
@@ -856,8 +1101,6 @@ Incluye:
             }
           },
           "attempt_count": 1,
-          "latency_ms": 10,
-          "latency_ms_total": 10,
           "error": ""
         }
       ],
@@ -877,6 +1120,16 @@ Incluye:
       "total_latency_ms": 10,
       "persisted_steps": 5
     }
+  },
+  "run_memory": {
+    "verification_status": "verified",
+    "tools_used": [
+      "spatial.network_trace"
+    ]
+  },
+  "episode": {
+    "verification_status": "verified",
+    "success": true
   }
 }
 ```
@@ -887,7 +1140,7 @@ Incluye:
 
 La API no impone un shape único más allá de `input_json`, pero el caso típico es:
 
-```json id="1s8xdt"
+```json
 {
   "agent": 1,
   "input_json": {
@@ -905,22 +1158,63 @@ La API no impone un shape único más allá de `input_json`, pero el caso típic
 }
 ```
 
-También puede usarse un `tool_call` directo dentro de `input_json` si el runner lo soporta para ejecución directa de una tool:
+Para network trace, el shape recomendable es:
 
-```json id="5ylzlx"
+```json
 {
   "agent": 1,
   "input_json": {
+    "goal": "Traza una ruta de red entre dos puntos",
+    "map_context": {
+      "bbox": {
+        "west": -6.06,
+        "south": 37.32,
+        "east": -6.05,
+        "north": 37.33
+      },
+      "zoom": 18
+    },
+    "trace_context": {
+      "start_point": {
+        "lon": -6.06,
+        "lat": 37.3201
+      },
+      "end_point": {
+        "lon": -6.051,
+        "lat": 37.3299
+      }
+    }
+  }
+}
+```
+
+También puede usarse un `tool_call` directo dentro de `input_json` si el runner lo soporta para ejecución directa de una tool:
+
+```json
+{
+  "agent": 1,
+  "input_json": {
+    "goal": "forzar trace refutado",
     "tool_call": {
-      "name": "spatial.query_layer",
+      "name": "spatial.network_trace",
       "args": {
-        "layer": "demo_points",
+        "layer": "demo_lines",
+        "start_point": {
+          "lon": -6.06,
+          "lat": 37.3201
+        },
+        "end_point": {
+          "lon": -6.051,
+          "lat": 37.3299
+        },
         "bbox": {
           "west": -6.06,
           "south": 37.32,
           "east": -6.05,
           "north": 37.33
-        }
+        },
+        "include_geom": true,
+        "max_snap_distance_m": 20
       }
     }
   }
@@ -966,6 +1260,52 @@ Agrupa los resultados por estado:
 
 e incluye un bloque `counts`.
 
+## run_memory
+
+Memoria operacional persistida del run. Resume la ejecución en una estructura útil para filtrado, recuperación y analítica.
+
+Campos habituales:
+
+* `normalized_goal`
+* `goal_signature`
+* `domain`
+* `analysis_types`
+* `layers`
+* `tools_used`
+* `tool_sequence_signature`
+* `final_plan`
+* `plan_history`
+* `structured_results`
+* `verification_summary`
+* `verification_status`
+* `outcome`
+* `errors`
+* `failure_modes`
+* `replans`
+
+## episode
+
+Memoria episódica derivada de la ejecución. Resume el patrón de resolución del agente y el resultado final de la hipótesis.
+
+Campos habituales:
+
+* `normalized_goal`
+* `goal_signature`
+* `domain`
+* `analysis_types`
+* `tools_used`
+* `tool_sequence`
+* `tool_sequence_signature`
+* `outcome_status`
+* `verification_status`
+* `success`
+* `failure_mode`
+* `failure_modes`
+* `recommended_strategy`
+* `verification_summary`
+* `evidence`
+* `replan_count`
+
 ## stats
 
 Métricas agregadas del run:
@@ -987,7 +1327,7 @@ Las operaciones sobre runs ajenos deben responder `404`.
 
 # Ejemplo de integración en JavaScript
 
-```javascript id="08l7l2"
+```javascript
 const createRes = await fetch("/api/agents/runs/", {
   method: "POST",
   headers: {
@@ -1034,7 +1374,7 @@ console.log(trace);
 
 # Ejemplo de integración en Python
 
-```python id="13wgid"
+```python
 import requests
 
 BASE = "http://localhost:8000/api/agents"
@@ -1088,10 +1428,12 @@ print(trace_resp.json())
 
 * enviar `map_context.bbox` cuando el análisis sea espacial
 * enviar `zoom` si está disponible
+* para trazados de red, enviar también `trace_context.start_point` y `trace_context.end_point`
 * no asumir que crear un run implica ejecutarlo
 * usar `trace` para debugging y observabilidad
 * usar `steps` cuando se quiera inspeccionar el log persistido
 * apoyarse en `verification_summary` para evaluar si una hipótesis quedó confirmada o refutada
+* apoyarse en `run_memory` y `episode` para recuperación, analítica y ranking de estrategias
 * tratar `final_text` como síntesis final, no como sustituto del detalle técnico del trace
 
 ---
@@ -1114,7 +1456,7 @@ Run inexistente o perteneciente a otro usuario.
 
 Error interno durante planificación, ejecución de tools o síntesis. En esos casos, el run puede quedar con:
 
-```json id="yhz2p5"
+```json
 {
   "status": "failed",
   "error": "mensaje de error"
@@ -1123,4 +1465,13 @@ Error interno durante planificación, ejecución de tools o síntesis. En esos c
 
 ---
 
+# Resumen
 
+La API de GeoAgents no solo expone agentes y ejecuciones, sino también memoria persistente de comportamiento del agente. Esto permite:
+
+* ejecutar y auditar runs
+* inspeccionar planes y replans
+* verificar hipótesis con trazabilidad
+* recuperar ejecuciones pasadas por criterios semánticos
+* analizar estrategias exitosas y fallidas
+* construir observabilidad real sobre agentes GIS y no GIS
