@@ -1,0 +1,24 @@
+Collecting django
+  Using cached django-6.0.3-py3-none-any.whl.metadata (3.9 kB)
+Collecting asgiref>=3.9.1 (from django)
+  Using cached asgiref-3.11.1-py3-none-any.whl.metadata (9.3 kB)
+Collecting sqlparse>=0.5.0 (from django)
+  Using cached sqlparse-0.5.5-py3-none-any.whl.metadata (4.7 kB)
+Using cached django-6.0.3-py3-none-any.whl (8.4 MB)
+Using cached asgiref-3.11.1-py3-none-any.whl (24 kB)
+Using cached sqlparse-0.5.5-py3-none-any.whl (46 kB)
+Installing collected packages: sqlparse, asgiref, django
+  Attempting uninstall: sqlparse
+    Found existing installation: sqlparse 0.5.5
+    Uninstalling sqlparse-0.5.5:
+      Successfully uninstalled sqlparse-0.5.5
+  Attempting uninstall: asgiref
+    Found existing installation: asgiref 3.11.1
+    Uninstalling asgiref-3.11.1:
+      Successfully uninstalled asgiref-3.11.1
+  Attempting uninstall: django
+    Found existing installation: Django 5.2.12
+    Uninstalling Django-5.2.12:
+      Successfully uninstalled Django-5.2.12
+
+Successfully installed asgiref-3.11.1 django-6.0.3 sqlparse-0.5.5
