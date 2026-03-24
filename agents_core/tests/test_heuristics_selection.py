@@ -25,3 +25,11 @@ class HeuristicsSelectionTests(SimpleTestCase):
             failed_tool="spatial.network_trace",
         )
         self.assertIn("spatial.query_layer", tools)
+
+    def test_select_initial_tools_route_cost(self):
+        tools = select_initial_tools("Optimiza la ruta con coste y penalizaciones")
+        self.assertIn("spatial.route_cost", tools)
+
+    def test_select_initial_tools_service_area(self):
+        tools = select_initial_tools("Calcula la cobertura de servicio alcanzable en red")
+        self.assertIn("spatial.network_service_area", tools)

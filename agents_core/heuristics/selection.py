@@ -10,6 +10,10 @@ def select_initial_tools(goal: str, allowlist: Sequence[str] | None = None) -> L
 
     if any(token in normalized for token in ("traza", "trace", "red", "network", "ruta")):
         suggestions.append("spatial.network_trace")
+    if any(token in normalized for token in ("coste", "costo", "penaliz", "restric")):
+        suggestions.append("spatial.route_cost")
+    if any(token in normalized for token in ("servicio", "cobertura", "alcanzable", "service area")):
+        suggestions.append("spatial.network_service_area")
     if any(token in normalized for token in ("contexto", "entorno", "overview", "resumen")):
         suggestions.append("spatial.context_pack")
     if any(token in normalized for token in ("interse", "solap", "cruce", "contiene")):

@@ -273,6 +273,49 @@ Traza una ruta o recorrido sobre una red.
 
 ---
 
+
+## spatial.route_cost
+
+Optimiza rutas en red con una métrica de coste configurable.
+
+### Capacidades
+
+* coste por longitud (`length_weight`)
+* coste por tipo de segmento (`segment_type_costs` + `segment_type_field`)
+* penalizaciones por segmento o por tipo (`segment_penalties`, `segment_type_penalties`)
+* restricciones (`forbidden_segment_ids`, `forbidden_segment_types`, `max_segment_length_m`)
+* ruta óptima según métrica (`metric = "length" | "cost"`)
+
+### Cuándo usarla
+
+* FTTH con jerarquías de traza
+* utility networks con reglas operativas
+* despliegues con segmentos preferidos/evitados
+* rutas técnicas con restricciones explícitas
+
+---
+
+## spatial.network_service_area
+
+Calcula alcance de servicio real sobre topología de red desde un origen.
+
+### Capacidades
+
+* área alcanzable desde origen (`origin_point`)
+* límites por coste o distancia (`max_cost`, `max_distance_m`)
+* cobertura sobre red conectada real (no buffer euclídeo)
+* análisis de servicio sobre topología de red
+
+### Cuándo usarla
+
+* cobertura FTTH
+* utility networks
+* planificación de despliegue
+* análisis de cobertura efectiva
+
+---
+
+
 # Tools y verificación
 
 Desde Fase 1.5, una tool puede ejecutarse como parte de un step con:
@@ -375,7 +418,5 @@ tools_network_trace.py
 
 Evoluciones naturales previstas:
 
-* `spatial.route_cost`
-* `spatial.network_service_area`
 * `spatial.cluster`
 * `spatial.visibility`

@@ -6,6 +6,8 @@ TOOL_ANALYSIS_TYPES = {
     "spatial.intersects": "spatial_relation",
     "spatial.nearby": "proximity_analysis",
     "spatial.network_trace": "network_trace",
+    "spatial.network_service_area": "network_service_area",
+    "spatial.route_cost": "network_route_cost",
     "spatial.query_layer": "layer_query",
     "spatial.summary": "spatial_summary",
 }
@@ -22,6 +24,10 @@ KEYWORD_ANALYSIS_TYPES = {
     "ruta": "network_trace",
     "solap": "spatial_relation",
     "trace": "network_trace",
+    "servicio": "network_service_area",
+    "cobertura": "network_service_area",
+    "coste": "network_route_cost",
+    "costo": "network_route_cost",
 }
 
 
