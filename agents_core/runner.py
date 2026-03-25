@@ -353,13 +353,9 @@ def _enforce_plan_limits(plan: Dict[str, Any]) -> None:
 
 
 def _find_resume_index(steps: List[Dict[str, Any]], executed_outputs: List[Dict[str, Any]]) -> int:
-    executed_ids = {item.get("id") for item in executed_outputs if item.get("id")}
-    for idx, step in enumerate(steps):
-        if step.get("type") != "tool":
-            continue
-        if step.get("id") not in executed_ids:
-            return idx
-    return len(steps)
+    # En modo replan queremos re-ejecutar el plan reparado desde el inicio,
+    # incluso si reutiliza ids de pasos ya ejecutados.
+    return 0
 
 
 def _execute_tool_step(

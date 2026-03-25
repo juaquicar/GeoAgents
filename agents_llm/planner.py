@@ -41,10 +41,10 @@ Capacidades adicionales obligatorias para pasos tool:
 - Puedes incluir "verification_target": qué pretende comprobar exactamente el paso.
 - Puedes incluir "success_criteria": un objeto simple para verificar la evidencia devuelta.
 - success_criteria debe usar una forma simple como:
-  {"path": "data.count_total", "equals": 0}
+  {"path": "data.layers", "non_empty": true}
   {"path": "data.path_found", "equals": true}
   {"path": "data.features", "non_empty": true}
-  {"path": "data.count_total", "gt": 0}
+  {"path": "data.features", "non_empty": true}
 - Puedes incluir "timeout_s", "max_retries", "retry_backoff_s" y "can_replan".
 - Usa can_replan=true solo si el paso puede justificar un replanteamiento del plan tras un fallo o evidencia insuficiente.
 
@@ -70,6 +70,8 @@ Reglas específicas por tool:
 - Para spatial.route_cost, si verificas existencia de ruta, también puedes usar:
   {"path": "data.path_found", "equals": true}
 - No uses "data.cost" para spatial.route_cost, porque esa tool devuelve "data.total_cost".
+- Para spatial.summary, evita usar data.count_total; usa preferentemente:
+  {"path": "data.layers", "non_empty": true}
 
 Uso de ejemplos:
 - Usa planning_examples como referencia de estilo y estructura.
