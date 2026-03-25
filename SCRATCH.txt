@@ -4,18 +4,26 @@ curl -X POST http://127.0.0.1:8000/api/token/ \
   -d '{"username":"juanma","password":"Test1234"}'
 
 {"token":"1c794d1b131d8f11f678176176ca13cab6af7518"}
-
+c
 
 # NUEVO AGENTE
 curl -X POST http://127.0.0.1:8000/api/agents/ \
   -H "Content-Type: application/json" \
   -H "Authorization: Token $TOKEN" \
   -d '{
-    "name":"demo-investigate",
+    "name":"demo-analitico",
     "system_prompt":"Eres un agente espacial analítico.",
     "is_active": true,
     "profile": "investigate",
-    "tool_allowlist": ["spatial.summary","spatial.query_layer","spatial.nearby","spatial.intersects","spatial.context_pack"]
+    "tool_allowlist": ["utils.ping",
+      "utils.now",
+      "spatial.summary",
+      "spatial.query_layer",
+      "spatial.nearby",
+      "spatial.intersects",
+      "spatial.context_pack",
+      "spatial.network_trace",
+      "spatial.route_cost"]
   }'
 
 
@@ -23,7 +31,15 @@ curl -X POST http://127.0.0.1:8000/api/agents/ \
   curl -X PATCH http://127.0.0.1:8000/api/agents/$AGENT_ID/ \
   -H "Content-Type: application/json" \
   -H "Authorization: Token $TOKEN" \
-  -d '{"tool_allowlist":["utils.ping","utils.now","spatial.summary","spatial.query_layer","spatial.nearby"]}'
+  -d '{"tool_allowlist":["utils.ping",
+      "utils.now",
+      "spatial.summary",
+      "spatial.query_layer",
+      "spatial.nearby",
+      "spatial.intersects",
+      "spatial.context_pack",
+      "spatial.network_trace",
+      "spatial.route_cost"]}'
 
 
   # REUN CON NEARBY
@@ -143,3 +159,89 @@ curl -X POST http://127.0.0.1:8000/api/runs/ \
 
   curl http://127.0.0.1:8000/api/runs/$RUN_ID/steps/ \
   -H "Authorization: Token $TOKEN"
+
+
+  ---- EJEMPLOS DE EJECUCIONES DIRECTAS ---
+curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"calcular ruta por coste\",
+      \"tool_call\": {
+        \"name\": \"spatial.route_cost\",
+        \"args\": {
+          \"layer\": \"demo_lines\",
+          \"start_point\": {\"lon\": -6.0590, \"lat\": 37.3212},
+          \"end_point\": {\"lon\": -6.0525, \"lat\": 37.3288},
+          \"metric\": \"cost\",
+          \"include_geom\": true,
+          \"max_snap_distance_m\": 250,
+          \"length_weight\": 1.0,
+          \"segment_type_costs\": {
+            \"fiber\": 0.8,
+            \"duct\": 1.0,
+            \"slow\": 2.0
+          }
+        }
+      }
+    }
+  }"
+
+curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"ruta evitando tramo 3\",
+      \"tool_call\": {
+        \"name\": \"spatial.route_cost\",
+        \"args\": {
+          \"layer\": \"demo_lines\",
+          \"start_point\": {\"lon\": -6.0590, \"lat\": 37.3212},
+          \"end_point\": {\"lon\": -6.0525, \"lat\": 37.3288},
+          \"metric\": \"cost\",
+          \"include_geom\": true,
+          \"max_snap_distance_m\": 250,
+          \"length_weight\": 1.0,
+          \"restrictions\": {
+            \"forbidden_segment_ids\": [3]
+          }
+        }
+      }
+    }
+  }"
+
+
+--- CON EJECUCIÓN DEL LLM ---
+
+curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"Analiza la red en esta zona y resume la ruta óptima disponible\",
+      \"map_context\": {
+        \"bbox\": {\"west\": -6.06, \"south\": 37.32, \"east\": -6.05, \"north\": 37.33},
+        \"zoom\": 18
+      }
+    }
+  }"
+
+
+curl -X POST http://127.0.0.1:8000/api/runs/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Token $TOKEN" \
+  -d "{
+    \"agent\": $AGENT_ID,
+    \"input_json\": {
+      \"goal\": \"Calcula una ruta de red con coste entre el extremo suroeste y el noreste del bbox y resume el resultado\",
+      \"map_context\": {
+        \"bbox\": {\"west\": -6.06, \"south\": 37.32, \"east\": -6.05, \"north\": 37.33},
+        \"zoom\": 18
+      }
+    }
+  }"

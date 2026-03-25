@@ -89,6 +89,7 @@ def _inject_map_context(
         "spatial.query_layer",
         "spatial.intersects",
         "spatial.network_trace",
+        "spatial.route_cost",
     }:
         if "bbox" not in args and bbox:
             args["bbox"] = bbox
@@ -97,7 +98,7 @@ def _inject_map_context(
         if "zoom" not in args and zoom is not None:
             args["zoom"] = zoom
 
-    if tool_name == "spatial.network_trace":
+    if tool_name in {"spatial.network_trace", "spatial.route_cost"}:
         if "start_point" not in args and trace_context.get("start_point"):
             args["start_point"] = trace_context["start_point"]
         if "end_point" not in args and trace_context.get("end_point"):
@@ -276,6 +277,9 @@ def _step_has_required_network_trace_args(step: dict) -> bool:
     )
 
 
+
+
+
 def _apply_gis_goal_rules(
     steps: list,
     goal: str,
@@ -347,21 +351,14 @@ def _apply_gis_goal_rules(
         return steps
 
     # 2) NETWORK TRACE
-    if _goal_is_network_trace(goal):
-        valid_steps = [s for s in tool_steps if _step_has_required_network_trace_args(s)]
+    if _goal_is_route_cost(goal):
+        valid_steps = [
+            s for s in tool_steps
+            if s.get("type") == "tool" and s.get("name") == "spatial.route_cost"
+        ]
         has_valid = len(valid_steps) > 0
 
         if has_valid:
-            if _is_compact(profile):
-                return _keep_only_tools(steps, {"spatial.network_trace"})
-            if _is_rich(profile):
-                if _goal_requests_general_context(goal):
-                    return _prefer_primary_plus_optional(
-                        steps,
-                        primary={"spatial.network_trace"},
-                        secondary={"spatial.context_pack"},
-                    )
-                return _keep_only_tools(steps, {"spatial.network_trace"})
             if _goal_requests_general_context(goal) and not has_context_pack and bbox:
                 steps = _insert_before_final(
                     steps,
@@ -370,19 +367,23 @@ def _apply_gis_goal_rules(
             return steps
 
         inferred_layer = infer_network_layer(goal, gis_layers_catalog)
-        start_point = trace_context.get("start_point") or _bbox_corner_start(bbox)
-        end_point = trace_context.get("end_point") or _bbox_corner_end(bbox)
+        start_point = trace_context.get("start_point")
+        end_point = trace_context.get("end_point")
+
+        if not (start_point and end_point):
+            return steps
 
         new_step = {
             "type": "tool",
-            "name": "spatial.network_trace",
+            "name": "spatial.route_cost",
             "args": {
                 "layer": inferred_layer,
-                "bbox": bbox,
                 "start_point": start_point,
                 "end_point": end_point,
+                "metric": "cost",
                 "include_geom": True,
                 "max_snap_distance_m": 250,
+                **({"bbox": bbox} if bbox else {}),
             },
             "required": bool(inferred_layer and start_point and end_point and _is_compact(profile)),
         }
@@ -661,15 +662,25 @@ def _goal_is_network_trace(goal: str) -> bool:
     keywords = [
         "traza", "trace",
         "camino", "path",
-        "ruta", "route",
         "conecta", "conectar",
         "conectividad",
-        "red", "network",
         "segmentos que conectan",
         "tramos que conectan",
     ]
     return any(k in goal for k in keywords)
 
+
+def _goal_is_route_cost(goal: str) -> bool:
+    g = (goal or "").lower()
+    keywords = [
+        "ruta",
+        "route",
+        "coste",
+        "cost",
+        "network trace",
+        "traza de red",
+    ]
+    return any(k in g for k in keywords)
 
 def _bbox_center(bbox: dict | None) -> dict:
     if not bbox:
@@ -732,3 +743,5 @@ def _insert_before_final(steps: list, new_step: dict) -> list:
         out.append({"type": "final"})
 
     return out
+
+

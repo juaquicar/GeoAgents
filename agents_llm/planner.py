@@ -9,7 +9,7 @@ from .client import chat_completion_json
 from .examples import PLANNER_EXAMPLES
 from examples.canonical_plans import CANONICAL_PLANNER_EXAMPLES
 from .plan_postprocessor import normalize_plan
-
+from .plan_validation import validate_plan, validate_plan_gis_references
 
 PLANNER_SYSTEM_PROMPT = """
 Eres un planificador de un framework de agentes.
@@ -61,6 +61,15 @@ Reglas GIS:
 - Si el objetivo menciona proximidad, suele ser adecuado usar spatial.nearby.
 - Si el objetivo menciona intersección, solape, cruce o elementos contenidos entre capas, suele ser adecuado usar spatial.intersects.
 - Si el objetivo es explorar una capa concreta dentro de un bbox, suele ser adecuado usar spatial.query_layer.
+
+Reglas específicas por tool:
+- Para spatial.network_trace, si verificas éxito de ruta, usa:
+  {"path": "data.path_found", "equals": true}
+- Para spatial.route_cost, si verificas que se ha calculado una ruta con coste, usa:
+  {"path": "data.total_cost", "gt": 0}
+- Para spatial.route_cost, si verificas existencia de ruta, también puedes usar:
+  {"path": "data.path_found", "equals": true}
+- No uses "data.cost" para spatial.route_cost, porque esa tool devuelve "data.total_cost".
 
 Uso de ejemplos:
 - Usa planning_examples como referencia de estilo y estructura.
