@@ -196,6 +196,7 @@ def plan_run(
         payload=payload,
         agent_profile=getattr(run.agent, "profile", "compact"),
         gis_layers_catalog=gis_layers_catalog,
+        execution_context=execution_context,
     )
 
     normalized_result = validate_plan(normalized_result)

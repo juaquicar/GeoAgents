@@ -13,6 +13,7 @@ def normalize_plan(
     payload: dict | None = None,
     agent_profile: str = "compact",
     gis_layers_catalog: list | None = None,
+    execution_context: dict | None = None,
 ) -> dict:
     payload = payload or {}
     goal = (payload.get("goal") or "").lower()
@@ -20,6 +21,7 @@ def normalize_plan(
     trace_context = payload.get("trace_context") or {}
     profile = agent_profile or "compact"
     gis_layers_catalog = gis_layers_catalog or []
+    execution_context = execution_context or {}
 
     plan = deepcopy(plan)
     steps = plan.get("steps", [])
@@ -56,6 +58,7 @@ def normalize_plan(
         trace_context,
         profile=profile,
         gis_layers_catalog=gis_layers_catalog,
+        execution_context=execution_context,
     )
 
     normalized_steps = _remove_redundant_steps(normalized_steps)
@@ -104,8 +107,6 @@ def _inject_map_context(
         if "end_point" not in args and trace_context.get("end_point"):
             args["end_point"] = trace_context["end_point"]
 
-
-
     return args
 
 
@@ -137,7 +138,7 @@ def _inject_gis_inference(
         if not _is_valid_layer(args.get("layer")):
             args["layer"] = infer_query_layer(goal, gis_layers_catalog)
 
-    elif tool_name == "spatial.network_trace":
+    elif tool_name in {"spatial.network_trace", "spatial.route_cost"}:
         if not _is_valid_layer(args.get("layer")):
             args["layer"] = infer_network_layer(goal, gis_layers_catalog)
 
@@ -204,7 +205,7 @@ def _normalize_tool_args(tool_name: str, args: dict) -> dict:
         else:
             args["radius_m"] = 250.0
 
-    if tool_name == "spatial.network_trace":
+    if tool_name in {"spatial.network_trace", "spatial.route_cost"}:
         if "include_geom" in args:
             args["include_geom"] = bool(args["include_geom"])
         else:
@@ -253,6 +254,7 @@ def _step_has_required_query_layer_args(step: dict) -> bool:
     args = step.get("args") or {}
     return bool(args.get("layer"))
 
+
 def _is_valid_lonlat_point(point: dict | None) -> bool:
     if not isinstance(point, dict):
         return False
@@ -260,10 +262,10 @@ def _is_valid_lonlat_point(point: dict | None) -> bool:
         return False
     return True
 
+
 def _step_has_required_network_trace_args(step: dict) -> bool:
     if step.get("type") != "tool":
         return False
-
     if step.get("name") != "spatial.network_trace":
         return False
 
@@ -272,12 +274,113 @@ def _step_has_required_network_trace_args(step: dict) -> bool:
     has_start = _is_valid_lonlat_point(args.get("start_point"))
     has_end = _is_valid_lonlat_point(args.get("end_point"))
 
-    return (
-        has_layer and has_start and has_end
-    )
+    return has_layer and has_start and has_end
 
 
+def _step_has_required_route_cost_args(step: dict) -> bool:
+    if step.get("type") != "tool":
+        return False
+    if step.get("name") != "spatial.route_cost":
+        return False
 
+    args = step.get("args") or {}
+    has_layer = bool(args.get("layer"))
+    has_start = _is_valid_lonlat_point(args.get("start_point"))
+    has_end = _is_valid_lonlat_point(args.get("end_point"))
+
+    return has_layer and has_start and has_end
+
+
+def _enrich_existing_network_trace_step(
+    step: dict,
+    bbox: dict | None,
+    trace_context: dict | None,
+    inferred_layer: str | None,
+) -> dict:
+    step = deepcopy(step)
+    args = deepcopy(step.get("args") or {})
+    trace_context = trace_context or {}
+
+    start_point = args.get("start_point") or trace_context.get("start_point") or _bbox_corner_start(bbox)
+    end_point = args.get("end_point") or trace_context.get("end_point") or _bbox_corner_end(bbox)
+
+    if not args.get("layer") and inferred_layer:
+        args["layer"] = inferred_layer
+    if "bbox" not in args and bbox:
+        args["bbox"] = bbox
+    if "start_point" not in args and start_point:
+        args["start_point"] = start_point
+    if "end_point" not in args and end_point:
+        args["end_point"] = end_point
+    if "include_geom" not in args:
+        args["include_geom"] = True
+    if "max_snap_distance_m" not in args:
+        args["max_snap_distance_m"] = 250.0
+
+    step["args"] = _normalize_tool_args("spatial.network_trace", args)
+    step["required"] = True
+    step["on_fail"] = "continue"
+    step["can_replan"] = True
+    step["hypothesis"] = (step.get("hypothesis") or "").strip() or "Existe una ruta de red válida entre los puntos especificados."
+    step["verification_target"] = (step.get("verification_target") or "").strip() or "Comprobar si se ha encontrado una ruta."
+    step["success_criteria"] = step.get("success_criteria") or {"path": "data.path_found", "equals": True}
+    step["depends_on"] = step.get("depends_on") or []
+
+    return step
+
+
+def _enrich_existing_route_cost_step(
+    step: dict,
+    bbox: dict | None,
+    trace_context: dict | None,
+    inferred_layer: str | None,
+) -> dict:
+    step = deepcopy(step)
+    args = deepcopy(step.get("args") or {})
+    trace_context = trace_context or {}
+
+    start_point = args.get("start_point") or trace_context.get("start_point") or _bbox_corner_start(bbox)
+    end_point = args.get("end_point") or trace_context.get("end_point") or _bbox_corner_end(bbox)
+
+    if not args.get("layer") and inferred_layer:
+        args["layer"] = inferred_layer
+    if "bbox" not in args and bbox:
+        args["bbox"] = bbox
+    if "start_point" not in args and start_point:
+        args["start_point"] = start_point
+    if "end_point" not in args and end_point:
+        args["end_point"] = end_point
+    if "metric" not in args:
+        args["metric"] = "cost"
+    if "include_geom" not in args:
+        args["include_geom"] = True
+    if "max_snap_distance_m" not in args:
+        args["max_snap_distance_m"] = 250.0
+
+    step["args"] = _normalize_tool_args("spatial.route_cost", args)
+    step["required"] = True
+    step["on_fail"] = "continue"
+    step["can_replan"] = True
+    step["hypothesis"] = (step.get("hypothesis") or "").strip() or "Se puede calcular una ruta de red con coste entre los puntos especificados."
+    step["verification_target"] = (step.get("verification_target") or "").strip() or "Comprobar si se ha calculado una ruta con coste."
+    step["success_criteria"] = step.get("success_criteria") or {"path": "data.total_cost", "gt": 0}
+    step["depends_on"] = step.get("depends_on") or []
+
+    return step
+
+
+def _was_tool_attempted(execution_context: dict | None, tool_name: str) -> bool:
+    execution_context = execution_context or {}
+
+    for step in execution_context.get("executed_steps", []) or []:
+        if step.get("type") == "tool" and step.get("name") == tool_name:
+            return True
+
+    for step in execution_context.get("previous_plan_steps", []) or []:
+        if step.get("type") == "tool" and step.get("name") == tool_name:
+            return True
+
+    return False
 
 
 def _apply_gis_goal_rules(
@@ -287,16 +390,21 @@ def _apply_gis_goal_rules(
     trace_context: dict | None = None,
     profile: str = "compact",
     gis_layers_catalog: list | None = None,
+    execution_context: dict | None = None,
 ) -> list:
     goal = (goal or "").lower()
     trace_context = trace_context or {}
     gis_layers_catalog = gis_layers_catalog or []
+    execution_context = execution_context or {}
 
     tool_steps = [s for s in steps if s.get("type") == "tool"]
     has_context_pack = any(s.get("name") == "spatial.context_pack" for s in tool_steps)
 
     bbox = map_context.get("bbox")
     zoom = map_context.get("zoom")
+
+    is_route_cost_goal = _goal_is_route_cost(goal)
+    is_network_trace_goal = _goal_is_network_trace(goal)
 
     # 1) INTERSECTION
     if _goal_is_intersection(goal):
@@ -351,14 +459,19 @@ def _apply_gis_goal_rules(
         return steps
 
     # 2) NETWORK TRACE
-    if _goal_is_route_cost(goal):
-        valid_steps = [
-            s for s in tool_steps
-            if s.get("type") == "tool" and s.get("name") == "spatial.route_cost"
-        ]
+    if is_network_trace_goal and not is_route_cost_goal:
+        inferred_layer = infer_network_layer(goal, gis_layers_catalog)
+        valid_steps = [s for s in tool_steps if _step_has_required_network_trace_args(s)]
         has_valid = len(valid_steps) > 0
 
         if has_valid:
+            steps = [
+                _enrich_existing_network_trace_step(s, bbox, trace_context, inferred_layer)
+                if s.get("type") == "tool" and s.get("name") == "spatial.network_trace"
+                else s
+                for s in steps
+            ]
+
             if _goal_requests_general_context(goal) and not has_context_pack and bbox:
                 steps = _insert_before_final(
                     steps,
@@ -366,26 +479,29 @@ def _apply_gis_goal_rules(
                 )
             return steps
 
-        inferred_layer = infer_network_layer(goal, gis_layers_catalog)
-        start_point = trace_context.get("start_point")
-        end_point = trace_context.get("end_point")
+        start_point = trace_context.get("start_point") or _bbox_corner_start(bbox)
+        end_point = trace_context.get("end_point") or _bbox_corner_end(bbox)
 
         if not (start_point and end_point):
             return steps
 
         new_step = {
             "type": "tool",
-            "name": "spatial.route_cost",
+            "name": "spatial.network_trace",
             "args": {
                 "layer": inferred_layer,
                 "start_point": start_point,
                 "end_point": end_point,
-                "metric": "cost",
                 "include_geom": True,
-                "max_snap_distance_m": 250,
+                "max_snap_distance_m": 250.0,
                 **({"bbox": bbox} if bbox else {}),
             },
-            "required": bool(inferred_layer and start_point and end_point and _is_compact(profile)),
+            "required": bool(inferred_layer and start_point and end_point),
+            "on_fail": "continue",
+            "can_replan": True,
+            "hypothesis": "Existe una ruta de red válida entre los puntos especificados.",
+            "verification_target": "Comprobar si se ha encontrado una ruta.",
+            "success_criteria": {"path": "data.path_found", "equals": True},
         }
 
         if _is_compact(profile):
@@ -401,7 +517,131 @@ def _apply_gis_goal_rules(
             )
         return steps
 
-    # 3) NEARBY
+    # 3) ROUTE COST
+    if is_route_cost_goal:
+        inferred_layer = infer_network_layer(goal, gis_layers_catalog)
+        valid_steps = [s for s in tool_steps if _step_has_required_route_cost_args(s)]
+        has_valid = len(valid_steps) > 0
+
+        if has_valid:
+            steps = [
+                _enrich_existing_route_cost_step(s, bbox, trace_context, inferred_layer)
+                if s.get("type") == "tool" and s.get("name") == "spatial.route_cost"
+                else s
+                for s in steps
+            ]
+
+            # Si el objetivo es de coste, pero aún no existe network_trace y no se había intentado antes,
+            # en perfiles no compactos lo añadimos como apoyo/fallback explícito.
+            has_network_trace_step = any(
+                s.get("type") == "tool" and s.get("name") == "spatial.network_trace"
+                for s in steps
+            )
+            network_trace_was_attempted = _was_tool_attempted(execution_context, "spatial.network_trace")
+
+            if (
+                not _is_compact(profile)
+                and not has_network_trace_step
+                and not network_trace_was_attempted
+            ):
+                start_point = trace_context.get("start_point") or _bbox_corner_start(bbox)
+                end_point = trace_context.get("end_point") or _bbox_corner_end(bbox)
+
+                if inferred_layer and start_point and end_point:
+                    steps = _insert_before_final(
+                        steps,
+                        {
+                            "type": "tool",
+                            "name": "spatial.network_trace",
+                            "args": {
+                                "layer": inferred_layer,
+                                "start_point": start_point,
+                                "end_point": end_point,
+                                "include_geom": True,
+                                "max_snap_distance_m": 250.0,
+                                **({"bbox": bbox} if bbox else {}),
+                            },
+                            "required": False,
+                            "on_fail": "continue",
+                            "can_replan": False,
+                            "hypothesis": "Existe una ruta de red válida entre los puntos especificados.",
+                            "verification_target": "Comprobar si se ha encontrado una ruta.",
+                            "success_criteria": {"path": "data.path_found", "equals": True},
+                        },
+                    )
+
+            if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+                steps = _insert_before_final(
+                    steps,
+                    _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
+                )
+            return steps
+
+        start_point = trace_context.get("start_point") or _bbox_corner_start(bbox)
+        end_point = trace_context.get("end_point") or _bbox_corner_end(bbox)
+
+        if not (start_point and end_point):
+            return steps
+
+        new_step = {
+            "type": "tool",
+            "name": "spatial.route_cost",
+            "args": {
+                "layer": inferred_layer,
+                "start_point": start_point,
+                "end_point": end_point,
+                "metric": "cost",
+                "include_geom": True,
+                "max_snap_distance_m": 250.0,
+                **({"bbox": bbox} if bbox else {}),
+            },
+            "required": bool(inferred_layer and start_point and end_point),
+            "on_fail": "continue",
+            "can_replan": True,
+            "hypothesis": "Se puede calcular una ruta de red con coste entre los puntos especificados.",
+            "verification_target": "Comprobar si se ha calculado una ruta con coste.",
+            "success_criteria": {"path": "data.total_cost", "gt": 0},
+        }
+
+        if _is_compact(profile):
+            if inferred_layer and start_point and end_point:
+                return [new_step, {"type": "final"}]
+            return steps
+
+        steps = _insert_before_final(steps, new_step)
+
+        # En perfiles no compactos, añadimos network_trace solo si no se intentó ya.
+        if not _was_tool_attempted(execution_context, "spatial.network_trace"):
+            steps = _insert_before_final(
+                steps,
+                {
+                    "type": "tool",
+                    "name": "spatial.network_trace",
+                    "args": {
+                        "layer": inferred_layer,
+                        "start_point": start_point,
+                        "end_point": end_point,
+                        "include_geom": True,
+                        "max_snap_distance_m": 250.0,
+                        **({"bbox": bbox} if bbox else {}),
+                    },
+                    "required": False if _is_rich(profile) else True,
+                    "on_fail": "continue",
+                    "can_replan": True,
+                    "hypothesis": "Existe una ruta de red válida entre los puntos especificados.",
+                    "verification_target": "Comprobar si se ha encontrado una ruta.",
+                    "success_criteria": {"path": "data.path_found", "equals": True},
+                },
+            )
+
+        if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+            steps = _insert_before_final(
+                steps,
+                _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
+            )
+        return steps
+
+    # 4) NEARBY
     if _goal_is_nearby(goal):
         valid_steps = [s for s in tool_steps if _step_has_required_nearby_args(s)]
         has_valid = len(valid_steps) > 0
@@ -451,7 +691,7 @@ def _apply_gis_goal_rules(
             )
         return steps
 
-    # 4) QUERY LAYER
+    # 5) QUERY LAYER
     if _goal_is_layer_exploration(goal):
         valid_steps = [s for s in tool_steps if _step_has_required_query_layer_args(s)]
         has_valid = len(valid_steps) > 0
@@ -500,7 +740,7 @@ def _apply_gis_goal_rules(
             )
         return steps
 
-    # 5) SUMMARY
+    # 6) SUMMARY
     if _goal_is_general_summary(goal):
         has_context_pack_step = any(
             s.get("type") == "tool" and s.get("name") == "spatial.context_pack"
@@ -642,6 +882,7 @@ def _goal_is_intersection(goal: str) -> bool:
     ]
     return any(k in goal for k in keywords)
 
+
 def _goal_is_containment(goal: str) -> bool:
     keywords = [
         "dentro de", "caen dentro",
@@ -649,6 +890,7 @@ def _goal_is_containment(goal: str) -> bool:
         "within", "contains",
     ]
     return any(k in goal for k in keywords)
+
 
 def _goal_is_layer_exploration(goal: str) -> bool:
     keywords = [
@@ -659,28 +901,42 @@ def _goal_is_layer_exploration(goal: str) -> bool:
 
 
 def _goal_is_network_trace(goal: str) -> bool:
+    g = (goal or "").lower()
     keywords = [
-        "traza", "trace",
-        "camino", "path",
-        "conecta", "conectar",
+        "traza",
+        "trace",
+        "conecta",
+        "conectar",
         "conectividad",
         "segmentos que conectan",
         "tramos que conectan",
     ]
-    return any(k in goal for k in keywords)
+    return any(k in g for k in keywords)
 
 
 def _goal_is_route_cost(goal: str) -> bool:
     g = (goal or "").lower()
-    keywords = [
+
+    has_route = any(k in g for k in [
         "ruta",
         "route",
+        "camino",
+        "path",
+        "trazado",
+    ])
+
+    has_cost = any(k in g for k in [
         "coste",
+        "costo",
         "cost",
-        "network trace",
-        "traza de red",
-    ]
-    return any(k in g for k in keywords)
+        "métrica",
+        "metrica",
+        "penalización",
+        "penalizacion",
+    ])
+
+    return has_route and has_cost
+
 
 def _bbox_center(bbox: dict | None) -> dict:
     if not bbox:
@@ -723,10 +979,14 @@ def _to_float_or_default(value, default: float) -> float:
 
 
 def _insert_before_final(steps: list, new_step: dict) -> list:
-    existing_tool_names = {
-        s.get("name") for s in steps if s.get("type") == "tool"
+    existing_tool_signatures = {
+        _tool_signature(s.get("name"), s.get("args") or {})
+        for s in steps
+        if s.get("type") == "tool"
     }
-    if new_step.get("name") in existing_tool_names:
+
+    new_signature = _tool_signature(new_step.get("name"), new_step.get("args") or {})
+    if new_signature in existing_tool_signatures:
         return steps
 
     out = []
@@ -743,5 +1003,3 @@ def _insert_before_final(steps: list, new_step: dict) -> list:
         out.append({"type": "final"})
 
     return out
-
-
