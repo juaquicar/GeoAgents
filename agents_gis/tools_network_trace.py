@@ -155,6 +155,31 @@ def _nearest_graph_node(graph: nx.Graph, lon: float, lat: float):
     return best_node, best_dist
 
 
+def _compute_service_area_from_graph(
+    graph: nx.Graph,
+    *,
+    origin_node: Tuple[float, float],
+    max_cost: float | None,
+    max_distance_m: float | None,
+):
+    cost_distances = nx.single_source_dijkstra_path_length(graph, source=origin_node, weight="weight")
+    distance_limits = None
+    if max_distance_m is not None:
+        distance_limits = nx.single_source_dijkstra_path_length(graph, source=origin_node, weight="length_m")
+
+    def within_limit(node: Tuple[float, float], cost_value: float) -> bool:
+        if max_cost is not None and cost_value > max_cost:
+            return False
+        if max_distance_m is None:
+            return True
+        distance_value = float((distance_limits or {}).get(node, float("inf")))
+        return distance_value <= max_distance_m
+
+    reachable_nodes = [node for node, cost in cost_distances.items() if within_limit(node, cost)]
+    reachable_set = set(reachable_nodes)
+    return reachable_nodes, reachable_set, cost_distances
+
+
 def _extract_bbox_clause(args: Dict[str, Any], geom_col: str):
     bbox = args.get("bbox") or {}
     where_clauses = [f"{geom_col} IS NOT NULL"]
@@ -674,21 +699,12 @@ class SpatialNetworkServiceAreaTool(BaseTool):
         if origin_snap_m > max_snap_distance_m:
             return ToolResult(ok=True, data={"layer": layer_name, "reachable": False, "reason": "snap_distance_exceeded"})
 
-        distances = nx.single_source_dijkstra_path_length(graph, source=origin_node, weight="weight")
-
-        def within_limit(cost_value: float, node: Tuple[float, float]) -> bool:
-            if max_cost is not None and cost_value > max_cost:
-                return False
-            if max_distance_m is None:
-                return True
-            try:
-                length_value = nx.shortest_path_length(graph, origin_node, node, weight="length_m")
-            except nx.NetworkXNoPath:
-                return False
-            return float(length_value) <= max_distance_m
-
-        reachable_nodes = [node for node, cost in distances.items() if within_limit(cost, node)]
-        reachable_set = set(reachable_nodes)
+        reachable_nodes, reachable_set, distances = _compute_service_area_from_graph(
+            graph,
+            origin_node=origin_node,
+            max_cost=max_cost,
+            max_distance_m=max_distance_m,
+        )
 
         segment_ids = []
         segment_types = []
@@ -717,6 +733,10 @@ class SpatialNetworkServiceAreaTool(BaseTool):
                     geom = geom[:20_000] + "...(truncated)"
                 item["geom_geojson"] = geom
             segments.append(item)
+
+        total_network_segments = graph.number_of_edges()
+        total_network_length_m = sum(float(edge.get("length_m") or 0.0) for _, _, edge in graph.edges(data=True))
+        total_network_cost = sum(float(edge.get("weight") or 0.0) for _, _, edge in graph.edges(data=True))
 
         coverage_bbox = None
         if reachable_nodes:
@@ -748,6 +768,40 @@ class SpatialNetworkServiceAreaTool(BaseTool):
                 "reachable_segment_types": segment_types,
                 "total_reachable_length_m": total_reachable_length_m,
                 "total_reachable_cost": total_reachable_cost,
+                "coverage_summary": {
+                    "total_network_nodes": graph.number_of_nodes(),
+                    "total_network_segments": total_network_segments,
+                    "total_network_length_m": total_network_length_m,
+                    "total_network_cost": total_network_cost,
+                    "node_coverage_ratio": (
+                        float(len(reachable_nodes)) / float(graph.number_of_nodes())
+                        if graph.number_of_nodes() > 0
+                        else 0.0
+                    ),
+                    "segment_coverage_ratio": (
+                        float(len(segment_ids)) / float(total_network_segments)
+                        if total_network_segments > 0
+                        else 0.0
+                    ),
+                    "length_coverage_ratio": (
+                        float(total_reachable_length_m) / float(total_network_length_m)
+                        if total_network_length_m > 0
+                        else 0.0
+                    ),
+                    "cost_coverage_ratio": (
+                        float(total_reachable_cost) / float(total_network_cost)
+                        if total_network_cost > 0
+                        else 0.0
+                    ),
+                },
+                "reachable_nodes": [
+                    {
+                        "lon": node[0],
+                        "lat": node[1],
+                        "cost_from_origin": float(distances.get(node) or 0.0),
+                    }
+                    for node in reachable_nodes[:500]
+                ],
                 "coverage_bbox": coverage_bbox,
                 "service_segments": segments,
             },

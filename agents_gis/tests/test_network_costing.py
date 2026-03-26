@@ -1,6 +1,10 @@
 from django.test import SimpleTestCase
 
-from agents_gis.tools_network_trace import _build_network_graph, _parse_route_cost_options
+from agents_gis.tools_network_trace import (
+    _build_network_graph,
+    _compute_service_area_from_graph,
+    _parse_route_cost_options,
+)
 
 
 class NetworkCostingTests(SimpleTestCase):
@@ -77,3 +81,58 @@ class NetworkCostingTests(SimpleTestCase):
         )
 
         self.assertEqual(graph.number_of_edges(), 0)
+
+    def test_service_area_respects_cost_and_distance_limits(self):
+        rows = [
+            {
+                "id": 1,
+                "name": "A-B",
+                "segment_type": "fiber",
+                "start_lon": -6.0,
+                "start_lat": 37.0,
+                "end_lon": -6.001,
+                "end_lat": 37.0,
+                "length_m": 120,
+            },
+            {
+                "id": 2,
+                "name": "B-C",
+                "segment_type": "fiber",
+                "start_lon": -6.001,
+                "start_lat": 37.0,
+                "end_lon": -6.002,
+                "end_lat": 37.0,
+                "length_m": 120,
+            },
+            {
+                "id": 3,
+                "name": "C-D",
+                "segment_type": "fiber",
+                "start_lon": -6.002,
+                "start_lat": 37.0,
+                "end_lon": -6.003,
+                "end_lat": 37.0,
+                "length_m": 120,
+            },
+        ]
+
+        graph = _build_network_graph(rows, options=_parse_route_cost_options({"metric": "length"}))
+
+        reachable_nodes, _, _ = _compute_service_area_from_graph(
+            graph,
+            origin_node=(-6.0, 37.0),
+            max_cost=9999.0,
+            max_distance_m=240.0,
+        )
+        self.assertEqual(len(reachable_nodes), 3)
+        self.assertIn((-6.002, 37.0), reachable_nodes)
+        self.assertNotIn((-6.003, 37.0), reachable_nodes)
+
+        reachable_nodes_cost, _, _ = _compute_service_area_from_graph(
+            graph,
+            origin_node=(-6.0, 37.0),
+            max_cost=100.0,
+            max_distance_m=None,
+        )
+        self.assertEqual(len(reachable_nodes_cost), 1)
+        self.assertIn((-6.0, 37.0), reachable_nodes_cost)
