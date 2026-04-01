@@ -37,7 +37,10 @@ def invoke_tool(
         return ToolResult(ok=False, error=err), 0
 
     def _call():
-        return tool.invoke(args=args, run=run, user=user)
+        try:
+            return tool.invoke(args=args, run=run, user=user)
+        except Exception as exc:
+            return ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
     result, latency_ms = timed(_call)
 

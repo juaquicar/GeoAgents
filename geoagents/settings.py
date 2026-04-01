@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 import os
@@ -68,7 +69,7 @@ ROOT_URLCONF = 'geoagents.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -89,13 +90,37 @@ WSGI_APPLICATION = 'geoagents.wsgi.application'
 DATABASES = {
     "default": {
         "ENGINE": "django.contrib.gis.db.backends.postgis",
-        "NAME": "geoagents",
-        "USER": "geoagents",
-        "PASSWORD": "geoagents",
-        "HOST": "127.0.0.1",
-        "PORT": "5433",
+        "NAME": os.getenv("DB_NAME", "geoagents"),
+        "USER": os.getenv("DB_USER", "geoagents"),
+        "PASSWORD": os.getenv("DB_PASSWORD", "geoagents"),
+        "HOST": os.getenv("DB_HOST", "127.0.0.1"),
+        "PORT": os.getenv("DB_PORT", "5433"),
     }
 }
+
+# PostGIS remota para datos GIS (opcional)
+# Si GIS_REMOTE_DB_HOST está definido se añade el alias "gis_remote"
+_gis_remote_host = os.getenv("GIS_REMOTE_DB_HOST", "")
+if _gis_remote_host:
+    _gis_remote_cfg = {
+        "ENGINE": "django.contrib.gis.db.backends.postgis",
+        "NAME": os.getenv("GIS_REMOTE_DB_NAME", ""),
+        "USER": os.getenv("GIS_REMOTE_DB_USER", ""),
+        "PASSWORD": os.getenv("GIS_REMOTE_DB_PASSWORD", ""),
+        "HOST": _gis_remote_host,
+        "PORT": os.getenv("GIS_REMOTE_DB_PORT", "5432"),
+    }
+    _gis_sslmode = os.getenv("GIS_REMOTE_DB_SSLMODE", "")
+    if _gis_sslmode:
+        _gis_remote_cfg["OPTIONS"] = {"sslmode": _gis_sslmode}
+    DATABASES["gis_remote"] = _gis_remote_cfg
+
+# Alias de BD que usan las herramientas GIS
+# Poner "gis_remote" para apuntar a la BD remota
+AGENTS_GIS_DB_ALIAS = os.getenv("AGENTS_GIS_DB_ALIAS", "default")
+
+# Esquema PostgreSQL donde están las capas GIS
+AGENTS_GIS_SCHEMA = os.getenv("AGENTS_GIS_SCHEMA", "public")
 
 
 # Password validation
@@ -148,35 +173,43 @@ REST_FRAMEWORK = {
 
 
 
-AGENTS_GIS_LAYERS = [
-    {
-        "name": "demo_points",
-        "table": "demo_points",
-        "geom_col": "the_geom",
-        "id_col": "id",
-        "fields": ["name"],
-        "filter_fields": ["name"],
-        "geometry_kind": "point",
-    },
-    {
-        "name": "demo_polygons",
-        "table": "demo_polygons",
-        "geom_col": "the_geom",
-        "id_col": "id",
-        "fields": ["name"],
-        "filter_fields": ["name"],
-        "geometry_kind": "polygon",
-    },
-    {
-        "name": "demo_lines",
-        "table": "demo_lines",
-        "geom_col": "the_geom",
-        "id_col": "id",
-        "fields": ["name"],
-        "filter_fields": ["name"],
-        "geometry_kind": "line",
-    },
-]
+# Catálogo de capas GIS.
+# Si existe gis_layers_catalog.json (generado por inspect_remote_gis) se usa ese;
+# de lo contrario se usan las capas demo locales.
+_GIS_LAYERS_CATALOG = BASE_DIR / "gis_layers_catalog.json"
+if _GIS_LAYERS_CATALOG.exists():
+    with open(_GIS_LAYERS_CATALOG, encoding="utf-8") as _f:
+        AGENTS_GIS_LAYERS = json.load(_f)
+else:
+    AGENTS_GIS_LAYERS = [
+        {
+            "name": "demo_points",
+            "table": "demo_points",
+            "geom_col": "the_geom",
+            "id_col": "id",
+            "fields": ["name"],
+            "filter_fields": ["name"],
+            "geometry_kind": "point",
+        },
+        {
+            "name": "demo_polygons",
+            "table": "demo_polygons",
+            "geom_col": "the_geom",
+            "id_col": "id",
+            "fields": ["name"],
+            "filter_fields": ["name"],
+            "geometry_kind": "polygon",
+        },
+        {
+            "name": "demo_lines",
+            "table": "demo_lines",
+            "geom_col": "the_geom",
+            "id_col": "id",
+            "fields": ["name"],
+            "filter_fields": ["name"],
+            "geometry_kind": "line",
+        },
+    ]
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

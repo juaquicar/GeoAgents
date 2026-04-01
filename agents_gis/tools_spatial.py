@@ -1,10 +1,12 @@
 from django.conf import settings
-from django.db import connection
 
 from agents_tools.base import BaseTool, ToolResult
 from agents_tools.registry import register_tool
 
-from agents_gis.service import _fetchall_dict
+from agents_gis.service import (
+    _fetchall_dict, get_gis_connection, qualified_table, quote_col,
+    get_layer_srid, geom_to_4326, bbox_in_layer_srid,
+)
 
 @register_tool
 class SpatialSummaryTool(BaseTool):
@@ -66,35 +68,40 @@ class SpatialSummaryTool(BaseTool):
         east = float(bbox["east"])
         north = float(bbox["north"])
 
-        envelope_sql = "ST_MakeEnvelope(%s, %s, %s, %s, 4326)"
         order_sql = "ORDER BY random()" if random_sample else ""
 
         out_layers = []
-        with connection.cursor() as cur:
+        with get_gis_connection().cursor() as cur:
             for layer in layers_cfg:
-                table = layer["table"]
+                table = qualified_table(layer)
                 geom_col = layer.get("geom_col", "the_geom")
+                qgeom = quote_col(geom_col)
+                srid = get_layer_srid(layer)
                 id_col = layer.get("id_col", "id")
                 fields = layer.get("fields", [])
+
+                # Envelope en el SRID de la capa para los filtros espaciales
+                envelope_sql = bbox_in_layer_srid(srid)
+                # Expresión de geometría transformada a 4326 para outputs
+                geom4326 = geom_to_4326(qgeom, srid)
 
                 # 1) Count
                 count_sql = f"""
                     SELECT COUNT(*)::int AS count
                     FROM {table}
-                    WHERE {geom_col} IS NOT NULL
-                      AND ST_Intersects({geom_col}, {envelope_sql})
+                    WHERE {qgeom} IS NOT NULL
+                      AND ST_Intersects({qgeom}, {envelope_sql})
                 """
                 cur.execute(count_sql, [west, south, east, north])
                 count = cur.fetchone()[0]
 
                 # 2) Distribución simple de tipos de geometría
-                # (útil para saber si es point/line/polygon sin mirar samples)
                 geom_types_sql = f"""
-                    SELECT GeometryType({geom_col}) AS geom_type, COUNT(*)::int AS n
+                    SELECT GeometryType({qgeom}) AS geom_type, COUNT(*)::int AS n
                     FROM {table}
-                    WHERE {geom_col} IS NOT NULL
-                      AND ST_Intersects({geom_col}, {envelope_sql})
-                    GROUP BY GeometryType({geom_col})
+                    WHERE {qgeom} IS NOT NULL
+                      AND ST_Intersects({qgeom}, {envelope_sql})
+                    GROUP BY GeometryType({qgeom})
                     ORDER BY n DESC
                     LIMIT 10
                 """
@@ -102,42 +109,38 @@ class SpatialSummaryTool(BaseTool):
                 geom_types = _fetchall_dict(cur)
 
                 # 3) Sample
-                select_cols = [id_col] + list(fields)
+                select_cols = [quote_col(id_col)] + [quote_col(f) for f in fields]
                 select_fields_sql = ", ".join(select_cols)
 
-                # Métricas: area/length en "geography" (aprox en metros) sin reproyectar
-                # - length_m: para lines
-                # - area_m2: para polygons
-                # Para points será 0.
+                # Métricas en geography (metros) — requiere pasar por 4326
                 metrics_sql = f"""
-                    GeometryType({geom_col}) AS geom_type,
-                    ST_Dimension({geom_col})::int AS geom_dim,
+                    GeometryType({qgeom}) AS geom_type,
+                    ST_Dimension({qgeom})::int AS geom_dim,
                     CASE
-                      WHEN ST_Dimension({geom_col}) = 1 THEN ST_Length({geom_col}::geography)::float
+                      WHEN ST_Dimension({qgeom}) = 1 THEN ST_Length({geom4326}::geography)::float
                       ELSE 0::float
                     END AS length_m,
                     CASE
-                      WHEN ST_Dimension({geom_col}) = 2 THEN ST_Area({geom_col}::geography)::float
+                      WHEN ST_Dimension({qgeom}) = 2 THEN ST_Area({geom4326}::geography)::float
                       ELSE 0::float
                     END AS area_m2
                 """
 
-                # Centroid (para cualquier geom)
+                # Centroid en lon/lat 4326
                 centroid_sql = f"""
-                    ST_X(ST_Centroid({geom_col}))::float AS lon,
-                    ST_Y(ST_Centroid({geom_col}))::float AS lat
+                    ST_X(ST_Centroid({geom4326}))::float AS lon,
+                    ST_Y(ST_Centroid({geom4326}))::float AS lat
                 """
 
-                # Geom simplificada opcional (GeoJSON)
+                # GeoJSON siempre en 4326
                 geom_geojson_sql = ""
                 if include_geom:
                     if simplify_meters > 0:
-                        # simplificamos en 3857 por metros, y volvemos a 4326
                         geom_geojson_sql = f""",
                           ST_AsGeoJSON(
                             ST_Transform(
                               ST_SimplifyPreserveTopology(
-                                ST_Transform({geom_col}, 3857),
+                                ST_Transform({qgeom}, 3857),
                                 %s
                               ),
                               4326
@@ -146,7 +149,7 @@ class SpatialSummaryTool(BaseTool):
                         """
                     else:
                         geom_geojson_sql = f""",
-                          ST_AsGeoJSON({geom_col}) AS geom_geojson
+                          ST_AsGeoJSON({geom4326}) AS geom_geojson
                         """
 
                 sample_sql = f"""
@@ -156,8 +159,8 @@ class SpatialSummaryTool(BaseTool):
                       {metrics_sql}
                       {geom_geojson_sql}
                     FROM {table}
-                    WHERE {geom_col} IS NOT NULL
-                      AND ST_Intersects({geom_col}, {envelope_sql})
+                    WHERE {qgeom} IS NOT NULL
+                      AND ST_Intersects({qgeom}, {envelope_sql})
                     {order_sql}
                     LIMIT %s
                 """

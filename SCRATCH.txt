@@ -39,7 +39,9 @@ curl -X POST http://127.0.0.1:8000/api/agents/ \
       "spatial.intersects",
       "spatial.context_pack",
       "spatial.network_trace",
-      "spatial.route_cost"]}'
+      "spatial.route_cost",
+      "spatial.network_service_area"
+      ]}'
 
 
   # REUN CON NEARBY

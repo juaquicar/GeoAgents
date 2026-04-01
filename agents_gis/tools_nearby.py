@@ -1,9 +1,10 @@
-from django.db import connection
-
 from agents_tools.base import BaseTool, ToolResult
 from agents_tools.registry import register_tool
 
-from agents_gis.service import _fetchall_dict, _get_layer_cfg
+from agents_gis.service import (
+    _fetchall_dict, _get_layer_cfg, get_gis_connection, qualified_table, quote_col,
+    get_layer_srid, geom_to_4326, point_in_layer_srid,
+)
 
 
 @register_tool
@@ -61,8 +62,9 @@ class SpatialNearbyTool(BaseTool):
         if not isinstance(filters, dict):
             return ToolResult(ok=False, error="filters must be an object")
 
-        table = layer["table"]
+        table = qualified_table(layer)
         geom_col = layer.get("geom_col", "the_geom")
+        srid = get_layer_srid(layer)
         id_col = layer.get("id_col", "id")
         fields = layer.get("fields", [])
         filter_fields = set(layer.get("filter_fields", []) or [])
@@ -71,16 +73,23 @@ class SpatialNearbyTool(BaseTool):
             if k not in filter_fields:
                 return ToolResult(ok=False, error=f"filter not allowed: {k}")
 
+        qgeom = quote_col(geom_col)
+        geom4326 = geom_to_4326(qgeom, srid)
+
+        # Para DWithin: transformamos el punto al SRID de la capa y comparamos en metros
+        # usando ST_DWithin con geografía (tranformando la geom a 4326 primero)
         pt_geog_sql = "ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography"
 
         where_clauses = [
-            f"{geom_col} IS NOT NULL",
-            f"ST_DWithin({geom_col}::geography, {pt_geog_sql}, %s)",
+            f"{qgeom} IS NOT NULL",
+            f"ST_DWithin({geom4326}::geography, {pt_geog_sql}, %s)",
         ]
         where_params = [lon, lat, radius_m]
 
         for k, v in filters.items():
-            where_clauses.append(f"{k} = %s")
+            if not isinstance(v, (str, int, float, bool)) and v is not None:
+                return ToolResult(ok=False, error=f"filter value for '{k}' must be a scalar")
+            where_clauses.append(f"{quote_col(k)} = %s")
             where_params.append(v)
 
         where_sql = " AND ".join(where_clauses)
@@ -91,29 +100,29 @@ class SpatialNearbyTool(BaseTool):
             WHERE {where_sql}
         """
 
-        select_cols = [id_col] + list(fields)
+        select_cols = [quote_col(id_col)] + [quote_col(f) for f in fields]
         select_fields_sql = ", ".join(select_cols)
 
         centroid_sql = f"""
-            ST_X(ST_Centroid({geom_col}))::float AS lon,
-            ST_Y(ST_Centroid({geom_col}))::float AS lat
+            ST_X(ST_Centroid({geom4326}))::float AS lon,
+            ST_Y(ST_Centroid({geom4326}))::float AS lat
         """
 
         metrics_sql = f"""
-            GeometryType({geom_col}) AS geom_type,
-            ST_Dimension({geom_col})::int AS geom_dim,
+            GeometryType({qgeom}) AS geom_type,
+            ST_Dimension({qgeom})::int AS geom_dim,
             CASE
-              WHEN ST_Dimension({geom_col}) = 1 THEN ST_Length({geom_col}::geography)::float
+              WHEN ST_Dimension({qgeom}) = 1 THEN ST_Length({geom4326}::geography)::float
               ELSE 0::float
             END AS length_m,
             CASE
-              WHEN ST_Dimension({geom_col}) = 2 THEN ST_Area({geom_col}::geography)::float
+              WHEN ST_Dimension({qgeom}) = 2 THEN ST_Area({geom4326}::geography)::float
               ELSE 0::float
             END AS area_m2
         """
 
         distance_sql = f"""
-            ST_Distance({geom_col}::geography, {pt_geog_sql})::float AS distance_m
+            ST_Distance({geom4326}::geography, {pt_geog_sql})::float AS distance_m
         """
 
         geom_geojson_sql = ""
@@ -124,7 +133,7 @@ class SpatialNearbyTool(BaseTool):
                   ST_AsGeoJSON(
                     ST_Transform(
                       ST_SimplifyPreserveTopology(
-                        ST_Transform({geom_col}, 3857),
+                        ST_Transform({qgeom}, 3857),
                         %s
                       ),
                       4326
@@ -134,7 +143,7 @@ class SpatialNearbyTool(BaseTool):
                 geom_params = [simplify_meters]
             else:
                 geom_geojson_sql = f""",
-                  ST_AsGeoJSON({geom_col}) AS geom_geojson
+                  ST_AsGeoJSON({geom4326}) AS geom_geojson
                 """
 
         items_sql = f"""
@@ -150,7 +159,7 @@ class SpatialNearbyTool(BaseTool):
             LIMIT %s OFFSET %s
         """
 
-        with connection.cursor() as cur:
+        with get_gis_connection().cursor() as cur:
             cur.execute(count_sql, where_params)
             count_total = cur.fetchone()[0]
 

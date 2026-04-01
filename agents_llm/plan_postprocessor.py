@@ -93,6 +93,7 @@ def _inject_map_context(
         "spatial.intersects",
         "spatial.network_trace",
         "spatial.route_cost",
+        "spatial.network_service_area",
     }:
         if "bbox" not in args and bbox:
             args["bbox"] = bbox
@@ -138,7 +139,7 @@ def _inject_gis_inference(
         if not _is_valid_layer(args.get("layer")):
             args["layer"] = infer_query_layer(goal, gis_layers_catalog)
 
-    elif tool_name in {"spatial.network_trace", "spatial.route_cost"}:
+    elif tool_name in {"spatial.network_trace", "spatial.route_cost", "spatial.network_service_area"}:
         if not _is_valid_layer(args.get("layer")):
             args["layer"] = infer_network_layer(goal, gis_layers_catalog)
 
@@ -291,6 +292,19 @@ def _step_has_required_route_cost_args(step: dict) -> bool:
     return has_layer and has_start and has_end
 
 
+def _step_has_required_network_service_area_args(step: dict) -> bool:
+    if step.get("type") != "tool":
+        return False
+    if step.get("name") != "spatial.network_service_area":
+        return False
+
+    args = step.get("args") or {}
+    has_layer = bool(args.get("layer"))
+    has_origin = _is_valid_lonlat_point(args.get("origin_point"))
+
+    return has_layer and has_origin
+
+
 def _enrich_existing_network_trace_step(
     step: dict,
     bbox: dict | None,
@@ -364,6 +378,51 @@ def _enrich_existing_route_cost_step(
     step["hypothesis"] = (step.get("hypothesis") or "").strip() or "Se puede calcular una ruta de red con coste entre los puntos especificados."
     step["verification_target"] = (step.get("verification_target") or "").strip() or "Comprobar si se ha calculado una ruta con coste."
     step["success_criteria"] = step.get("success_criteria") or {"path": "data.total_cost", "gt": 0}
+    step["depends_on"] = step.get("depends_on") or []
+
+    return step
+
+
+def _enrich_existing_network_service_area_step(
+    step: dict,
+    bbox: dict | None,
+    inferred_layer: str | None,
+) -> dict:
+    step = deepcopy(step)
+    args = deepcopy(step.get("args") or {})
+
+    if not args.get("layer") and inferred_layer:
+        args["layer"] = inferred_layer
+    if "bbox" not in args and bbox:
+        args["bbox"] = bbox
+    if "origin_point" not in args:
+        args["origin_point"] = _bbox_center(bbox)
+    if "metric" not in args:
+        args["metric"] = "cost"
+    if "include_geom" not in args:
+        args["include_geom"] = True
+    if "max_snap_distance_m" not in args:
+        args["max_snap_distance_m"] = 250.0
+
+    step["args"] = args
+    step["required"] = True
+    step["on_fail"] = "continue"
+    step["can_replan"] = True
+    step["hypothesis"] = (step.get("hypothesis") or "").strip() or "El área de cobertura de red es calculable desde el origen especificado."
+    step["verification_target"] = (step.get("verification_target") or "").strip() or "Comprobar si se ha calculado el área de servicio."
+    # Forzamos el criterio correcto: el LLM tiende a inventar paths como
+    # "data.area" que no existen. El único campo fiable es "data.reachable".
+    valid_service_area_paths = {
+        "data.reachable",
+        "data.reachable_segment_count",
+        "data.reachable_node_count",
+        "data.total_reachable_length_m",
+    }
+    existing_criteria = step.get("success_criteria") or {}
+    if not existing_criteria or existing_criteria.get("path") not in valid_service_area_paths:
+        step["success_criteria"] = {"path": "data.reachable", "equals": True}
+    else:
+        step["success_criteria"] = existing_criteria
     step["depends_on"] = step.get("depends_on") or []
 
     return step
@@ -641,7 +700,60 @@ def _apply_gis_goal_rules(
             )
         return steps
 
-    # 4) NEARBY
+    # 4) NETWORK SERVICE AREA
+    if _goal_is_network_service_area(goal):
+        inferred_layer = infer_network_layer(goal, gis_layers_catalog)
+        valid_steps = [s for s in tool_steps if _step_has_required_network_service_area_args(s)]
+        has_valid = len(valid_steps) > 0
+
+        if has_valid:
+            steps = [
+                _enrich_existing_network_service_area_step(s, bbox, inferred_layer)
+                if s.get("type") == "tool" and s.get("name") == "spatial.network_service_area"
+                else s
+                for s in steps
+            ]
+            if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+                steps = _insert_before_final(
+                    steps,
+                    _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
+                )
+            return steps
+
+        origin_point = _bbox_center(bbox)
+        new_step = {
+            "type": "tool",
+            "name": "spatial.network_service_area",
+            "args": {
+                "layer": inferred_layer,
+                "origin_point": origin_point,
+                "metric": "cost",
+                "include_geom": True,
+                "max_snap_distance_m": 250.0,
+                **({"bbox": bbox} if bbox else {}),
+            },
+            "required": bool(inferred_layer),
+            "on_fail": "continue",
+            "can_replan": True,
+            "hypothesis": "El área de cobertura de red es calculable desde el origen especificado.",
+            "verification_target": "Comprobar si se ha calculado el área de servicio.",
+            "success_criteria": {"path": "data.reachable", "equals": True},
+        }
+
+        if _is_compact(profile):
+            if inferred_layer:
+                return [new_step, {"type": "final"}]
+            return steps
+
+        steps = _insert_before_final(steps, new_step)
+        if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+            steps = _insert_before_final(
+                steps,
+                _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
+            )
+        return steps
+
+    # 5) NEARBY  (era 4)
     if _goal_is_nearby(goal):
         valid_steps = [s for s in tool_steps if _step_has_required_nearby_args(s)]
         has_valid = len(valid_steps) > 0
@@ -912,6 +1024,21 @@ def _goal_is_network_trace(goal: str) -> bool:
         "tramos que conectan",
     ]
     return any(k in g for k in keywords)
+
+
+def _goal_is_network_service_area(goal: str) -> bool:
+    g = (goal or "").lower()
+    return any(k in g for k in [
+        "area de servicio",
+        "área de servicio",
+        "cobertura de red",
+        "área alcanzable",
+        "area alcanzable",
+        "alcanzable desde",
+        "network_service_area",
+        "service area",
+        "servicearea",
+    ])
 
 
 def _goal_is_route_cost(goal: str) -> bool:

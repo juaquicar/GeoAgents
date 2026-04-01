@@ -2,12 +2,14 @@ import math
 from typing import Any, Dict, List, Set, Tuple
 
 import networkx as nx
-from django.db import connection
 
 from agents_tools.base import BaseTool, ToolResult
 from agents_tools.registry import register_tool
 
-from agents_gis.service import _fetchall_dict, _get_layer_cfg
+from agents_gis.service import (
+    _fetchall_dict, _get_layer_cfg, get_gis_connection, qualified_table, quote_col,
+    get_layer_srid, geom_to_4326, bbox_in_layer_srid,
+)
 
 
 def _haversine_m(lon1, lat1, lon2, lat2):
@@ -155,9 +157,35 @@ def _nearest_graph_node(graph: nx.Graph, lon: float, lat: float):
     return best_node, best_dist
 
 
-def _extract_bbox_clause(args: Dict[str, Any], geom_col: str):
+def _compute_service_area_from_graph(
+    graph: nx.Graph,
+    *,
+    origin_node: Tuple[float, float],
+    max_cost: float | None,
+    max_distance_m: float | None,
+):
+    cost_distances = nx.single_source_dijkstra_path_length(graph, source=origin_node, weight="weight")
+    distance_limits = None
+    if max_distance_m is not None:
+        distance_limits = nx.single_source_dijkstra_path_length(graph, source=origin_node, weight="length_m")
+
+    def within_limit(node: Tuple[float, float], cost_value: float) -> bool:
+        if max_cost is not None and cost_value > max_cost:
+            return False
+        if max_distance_m is None:
+            return True
+        distance_value = float((distance_limits or {}).get(node, float("inf")))
+        return distance_value <= max_distance_m
+
+    reachable_nodes = [node for node, cost in cost_distances.items() if within_limit(node, cost)]
+    reachable_set = set(reachable_nodes)
+    return reachable_nodes, reachable_set, cost_distances
+
+
+def _extract_bbox_clause(args: Dict[str, Any], geom_col: str, srid: int = 4326):
     bbox = args.get("bbox") or {}
-    where_clauses = [f"{geom_col} IS NOT NULL"]
+    qgeom = quote_col(geom_col)
+    where_clauses = [f"{qgeom} IS NOT NULL"]
     where_params: List[float] = []
 
     if bbox:
@@ -170,49 +198,138 @@ def _extract_bbox_clause(args: Dict[str, Any], geom_col: str):
         east = float(bbox["east"])
         north = float(bbox["north"])
 
-        where_clauses.append(
-            f"ST_Intersects({geom_col}, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
-        )
+        envelope_sql = bbox_in_layer_srid(srid)
+        where_clauses.append(f"ST_Intersects({qgeom}, {envelope_sql})")
         where_params.extend([west, south, east, north])
 
     return " AND ".join(where_clauses), where_params
 
 
-def _fetch_network_rows(layer: Dict[str, Any], args: Dict[str, Any], include_geom: bool):
-    table = layer["table"]
+def _fetch_polygon_boundary_edges(
+    layer: Dict[str, Any],
+    args: Dict[str, Any],
+    include_geom: bool,
+    max_polygons: int = 300,
+) -> List[Dict[str, Any]]:
+    """
+    Para capas de tipo polygon/multipolygon, extrae las aristas individuales de
+    los límites exteriores de cada geometría como tramos de red.
+
+    Cada par de vértices consecutivos en el anillo exterior forma un tramo con
+    sus propios start_lon/lat y end_lon/lat en WGS84.
+    """
+    table = qualified_table(layer)
     geom_col = layer.get("geom_col", "the_geom")
+    srid = get_layer_srid(layer)
+    id_col = layer.get("id_col", "id")
+
+    qgeom = quote_col(geom_col)
+    qid = quote_col(id_col)
+
+    # La geometría se transforma a 4326 para que las coordenadas de salida sean WGS84
+    if srid != 4326:
+        geom_4326_expr = f"ST_Transform({qgeom}, 4326)"
+    else:
+        geom_4326_expr = qgeom
+
+    where_sql, where_params = _extract_bbox_clause(args, geom_col, srid)
+
+    geom_geojson_sql = ""
+    if include_geom:
+        geom_geojson_sql = """
+            , ST_AsGeoJSON(
+                ST_MakeLine(
+                    ST_PointN(rings.ring, gs2.seg_n),
+                    ST_PointN(rings.ring, gs2.seg_n + 1)
+                )
+            ) AS geom_geojson
+        """
+
+    sql = f"""
+        SELECT
+            (rings.src_id::text || '_' || rings.poly_n::text || '_' || gs2.seg_n::text) AS id,
+            NULL::text AS name,
+            NULL::text AS segment_type,
+            ST_X(ST_PointN(rings.ring, gs2.seg_n))::float        AS start_lon,
+            ST_Y(ST_PointN(rings.ring, gs2.seg_n))::float        AS start_lat,
+            ST_X(ST_PointN(rings.ring, gs2.seg_n + 1))::float    AS end_lon,
+            ST_Y(ST_PointN(rings.ring, gs2.seg_n + 1))::float    AS end_lat,
+            ST_Length(
+                ST_MakeLine(
+                    ST_PointN(rings.ring, gs2.seg_n),
+                    ST_PointN(rings.ring, gs2.seg_n + 1)
+                )::geography
+            )::float AS length_m
+            {geom_geojson_sql}
+        FROM (
+            SELECT
+                {qid} AS src_id,
+                gs1.poly_n,
+                ST_ExteriorRing(
+                    ST_GeometryN({geom_4326_expr}, gs1.poly_n)
+                ) AS ring,
+                ST_NPoints(
+                    ST_ExteriorRing(ST_GeometryN({geom_4326_expr}, gs1.poly_n))
+                ) AS n_pts
+            FROM {table}
+            CROSS JOIN generate_series(1, ST_NumGeometries({qgeom})) AS gs1(poly_n)
+            WHERE {where_sql}
+            LIMIT %s
+        ) AS rings
+        CROSS JOIN LATERAL generate_series(1, rings.n_pts - 1) AS gs2(seg_n)
+        WHERE rings.n_pts > 1
+    """
+
+    params = where_params + [max_polygons]
+
+    with get_gis_connection().cursor() as cur:
+        cur.execute(sql, params)
+        return _fetchall_dict(cur)
+
+
+def _fetch_network_rows(layer: Dict[str, Any], args: Dict[str, Any], include_geom: bool):
+    # Para capas de polígono, extraer las aristas de los límites como red
+    geometry_kind = (layer.get("geometry_kind") or "line").lower()
+    if geometry_kind in ("polygon", "multipolygon"):
+        return _fetch_polygon_boundary_edges(layer, args, include_geom)
+
+    table = qualified_table(layer)
+    geom_col = layer.get("geom_col", "the_geom")
+    srid = get_layer_srid(layer)
     id_col = layer.get("id_col", "id")
 
     segment_type_field = str(args.get("segment_type_field") or "segment_type").strip()
     extra_cols = set(layer.get("fields") or [])
     has_segment_type = segment_type_field in extra_cols
 
-    where_sql, where_params = _extract_bbox_clause(args, geom_col)
+    qgeom = quote_col(geom_col)
+    geom4326 = geom_to_4326(qgeom, srid)
+    where_sql, where_params = _extract_bbox_clause(args, geom_col, srid)
 
     geom_geojson_sql = ""
     if include_geom:
-        geom_geojson_sql = f", ST_AsGeoJSON({geom_col}) AS geom_geojson"
+        geom_geojson_sql = f", ST_AsGeoJSON({geom4326}) AS geom_geojson"
 
     segment_type_sql = "NULL::text AS segment_type"
     if has_segment_type:
-        segment_type_sql = f"{segment_type_field}::text AS segment_type"
+        segment_type_sql = f"{quote_col(segment_type_field)}::text AS segment_type"
 
     sql = f"""
         SELECT
-            {id_col} AS id,
-            name,
+            {quote_col(id_col)} AS id,
+            {quote_col('name')},
             {segment_type_sql},
-            ST_X(ST_StartPoint({geom_col}))::float AS start_lon,
-            ST_Y(ST_StartPoint({geom_col}))::float AS start_lat,
-            ST_X(ST_EndPoint({geom_col}))::float AS end_lon,
-            ST_Y(ST_EndPoint({geom_col}))::float AS end_lat,
-            ST_Length({geom_col}::geography)::float AS length_m
+            ST_X(ST_StartPoint({geom4326}))::float AS start_lon,
+            ST_Y(ST_StartPoint({geom4326}))::float AS start_lat,
+            ST_X(ST_EndPoint({geom4326}))::float AS end_lon,
+            ST_Y(ST_EndPoint({geom4326}))::float AS end_lat,
+            ST_Length({geom4326}::geography)::float AS length_m
             {geom_geojson_sql}
         FROM {table}
         WHERE {where_sql}
     """
 
-    with connection.cursor() as cur:
+    with get_gis_connection().cursor() as cur:
         cur.execute(sql, where_params)
         return _fetchall_dict(cur)
 
@@ -674,21 +791,12 @@ class SpatialNetworkServiceAreaTool(BaseTool):
         if origin_snap_m > max_snap_distance_m:
             return ToolResult(ok=True, data={"layer": layer_name, "reachable": False, "reason": "snap_distance_exceeded"})
 
-        distances = nx.single_source_dijkstra_path_length(graph, source=origin_node, weight="weight")
-
-        def within_limit(cost_value: float, node: Tuple[float, float]) -> bool:
-            if max_cost is not None and cost_value > max_cost:
-                return False
-            if max_distance_m is None:
-                return True
-            try:
-                length_value = nx.shortest_path_length(graph, origin_node, node, weight="length_m")
-            except nx.NetworkXNoPath:
-                return False
-            return float(length_value) <= max_distance_m
-
-        reachable_nodes = [node for node, cost in distances.items() if within_limit(cost, node)]
-        reachable_set = set(reachable_nodes)
+        reachable_nodes, reachable_set, distances = _compute_service_area_from_graph(
+            graph,
+            origin_node=origin_node,
+            max_cost=max_cost,
+            max_distance_m=max_distance_m,
+        )
 
         segment_ids = []
         segment_types = []
@@ -717,6 +825,10 @@ class SpatialNetworkServiceAreaTool(BaseTool):
                     geom = geom[:20_000] + "...(truncated)"
                 item["geom_geojson"] = geom
             segments.append(item)
+
+        total_network_segments = graph.number_of_edges()
+        total_network_length_m = sum(float(edge.get("length_m") or 0.0) for _, _, edge in graph.edges(data=True))
+        total_network_cost = sum(float(edge.get("weight") or 0.0) for _, _, edge in graph.edges(data=True))
 
         coverage_bbox = None
         if reachable_nodes:
@@ -748,6 +860,40 @@ class SpatialNetworkServiceAreaTool(BaseTool):
                 "reachable_segment_types": segment_types,
                 "total_reachable_length_m": total_reachable_length_m,
                 "total_reachable_cost": total_reachable_cost,
+                "coverage_summary": {
+                    "total_network_nodes": graph.number_of_nodes(),
+                    "total_network_segments": total_network_segments,
+                    "total_network_length_m": total_network_length_m,
+                    "total_network_cost": total_network_cost,
+                    "node_coverage_ratio": (
+                        float(len(reachable_nodes)) / float(graph.number_of_nodes())
+                        if graph.number_of_nodes() > 0
+                        else 0.0
+                    ),
+                    "segment_coverage_ratio": (
+                        float(len(segment_ids)) / float(total_network_segments)
+                        if total_network_segments > 0
+                        else 0.0
+                    ),
+                    "length_coverage_ratio": (
+                        float(total_reachable_length_m) / float(total_network_length_m)
+                        if total_network_length_m > 0
+                        else 0.0
+                    ),
+                    "cost_coverage_ratio": (
+                        float(total_reachable_cost) / float(total_network_cost)
+                        if total_network_cost > 0
+                        else 0.0
+                    ),
+                },
+                "reachable_nodes": [
+                    {
+                        "lon": node[0],
+                        "lat": node[1],
+                        "cost_from_origin": float(distances.get(node) or 0.0),
+                    }
+                    for node in reachable_nodes[:500]
+                ],
                 "coverage_bbox": coverage_bbox,
                 "service_segments": segments,
             },

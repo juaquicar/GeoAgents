@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GeoAgents</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .sidebar-btn { @apply flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors; }
+    .sidebar-btn.active { @apply bg-indigo-600 text-white; }
+    .sidebar-btn:not(.active) { @apply text-slate-300 hover:bg-slate-700 hover:text-white; }
+    .step-badge { @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium; }
+    .json-pre { @apply text-xs bg-slate-950 text-green-400 p-3 rounded-lg overflow-auto max-h-64 font-mono; }
+    .chat-bubble-user { @apply bg-indigo-600 text-white rounded-2xl rounded-tr-sm px-4 py-2 max-w-[75%] ml-auto; }
+    .chat-bubble-agent { @apply bg-slate-700 text-slate-100 rounded-2xl rounded-tl-sm px-4 py-2 max-w-[85%] prose prose-invert prose-sm; }
+    .tag { @apply inline-block bg-slate-600 text-slate-200 text-xs px-2 py-0.5 rounded mr-1 mb-1; }
+
+    /* Basemap switcher */
+    .bm-control { background: #1e293b; border: 1px solid #334155; border-radius: 8px; overflow: hidden; }
+    .bm-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer;
+      font-size: 12px; color: #cbd5e1; white-space: nowrap; user-select: none; }
+    .bm-toggle:hover { background: #334155; }
+    .bm-panel { display: none; max-height: 320px; overflow-y: auto; width: 220px; }
+    .bm-panel.open { display: block; }
+    .bm-category { padding: 4px 10px; font-size: 10px; font-weight: 700; letter-spacing: .05em;
+      color: #64748b; text-transform: uppercase; background: #0f172a; }
+    .bm-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+      cursor: pointer; font-size: 12px; color: #94a3b8; }
+    .bm-item:hover { background: #334155; color: #f1f5f9; }
+    .bm-item.active { color: #818cf8; font-weight: 600; }
+    .bm-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; flex-shrink: 0; }
+    .bm-item.active .bm-dot { background: #818cf8; }
+
+    /* Bbox overlay */
+    .bbox-info { font-size: 11px; color: #94a3b8; background: rgba(15,23,42,0.8);
+      padding: 3px 8px; border-radius: 4px; pointer-events: none; white-space: nowrap; }
+    .leaflet-control-bbox { background: transparent !important; border: none !important; box-shadow: none !important; }
+  </style>
+  <script>
+    tailwind.config = {
+      theme: { extend: { typography: { invert: { css: { '--tw-prose-body': '#cbd5e1' } } } } }
+    }
+  </script>
+</head>
+<body class="bg-slate-900 text-slate-100 h-screen overflow-hidden" x-data="app()" x-init="init()" x-cloak>
+
+<!-- ══════════════════════════════════════════════════════
+     LOGIN
+═══════════════════════════════════════════════════════════ -->
+<div x-show="!token" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950">
+  <div class="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl p-8 w-full max-w-sm">
+    <div class="flex items-center gap-3 mb-8">
+      <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-xl">🌍</div>
+      <div>
+        <h1 class="text-xl font-bold text-white">GeoAgents</h1>
+        <p class="text-slate-400 text-xs">Plataforma de agentes GIS</p>
+      </div>
+    </div>
+    <form @submit.prevent="login()">
+      <div class="mb-4">
+        <label class="block text-sm text-slate-400 mb-1">Usuario</label>
+        <input x-model="loginForm.username" type="text" autocomplete="username"
+          class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
+      </div>
+      <div class="mb-6">
+        <label class="block text-sm text-slate-400 mb-1">Contraseña</label>
+        <input x-model="loginForm.password" type="password" autocomplete="current-password"
+          class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
+      </div>
+      <div x-show="loginError" class="mb-4 text-red-400 text-sm text-center" x-text="loginError"></div>
+      <button type="submit" :disabled="loginLoading"
+        class="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium rounded-lg py-2 text-sm transition-colors">
+        <span x-show="!loginLoading">Iniciar sesión</span>
+        <span x-show="loginLoading">Cargando…</span>
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     MAIN APP
+═══════════════════════════════════════════════════════════ -->
+<div x-show="token" class="flex h-screen">
+
+  <!-- SIDEBAR -->
+  <div class="w-52 bg-slate-800 border-r border-slate-700 flex flex-col shrink-0">
+    <div class="flex items-center gap-2 px-4 py-4 border-b border-slate-700">
+      <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-base">🌍</div>
+      <span class="font-bold text-white text-sm">GeoAgents</span>
+    </div>
+    <nav class="flex-1 p-3 space-y-1">
+      <button @click="setPage('chat')" :class="page==='chat'?'active':''" class="sidebar-btn w-full text-left">
+        <span>💬</span> Chat
+      </button>
+      <button @click="setPage('runs')" :class="page==='runs'?'active':''" class="sidebar-btn w-full text-left">
+        <span>📋</span> Ejecuciones
+      </button>
+      <button @click="setPage('agents')" :class="page==='agents'?'active':''" class="sidebar-btn w-full text-left">
+        <span>🤖</span> Agentes
+      </button>
+      <button @click="setPage('tools')" :class="page==='tools'?'active':''" class="sidebar-btn w-full text-left">
+        <span>🔧</span> Herramientas
+      </button>
+      <button @click="setPage('layers')" :class="page==='layers'?'active':''" class="sidebar-btn w-full text-left">
+        <span>🗺️</span> Capas GIS
+      </button>
+      <button @click="setPage('map')" :class="page==='map'?'active':''" class="sidebar-btn w-full text-left">
+        <span>📍</span> Mapa
+      </button>
+    </nav>
+    <div class="p-3 border-t border-slate-700">
+      <button @click="logout()" class="sidebar-btn w-full text-left text-slate-400 hover:text-red-400 hover:bg-red-900/20">
+        <span>🚪</span> Cerrar sesión
+      </button>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="flex-1 flex overflow-hidden">
+
+    <!-- ── CHAT (split: messages | map) ─────────────────── -->
+    <div x-show="page === 'chat'" class="flex-1 flex overflow-hidden">
+
+      <!-- Left: chat panel -->
+      <div class="flex flex-col" style="width:52%;min-width:340px;border-right:1px solid #1e293b">
+        <div class="px-4 py-3 border-b border-slate-700 bg-slate-800 flex items-center gap-3 shrink-0">
+          <h2 class="text-sm font-semibold whitespace-nowrap">Chat</h2>
+          <select x-model="chat.agentId" class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-xs">
+            <option value="">— Selecciona agente —</option>
+            <template x-for="a in agents" :key="a.id">
+              <option :value="a.id" x-text="a.name"></option>
+            </template>
+          </select>
+          <div class="text-xs text-slate-500 whitespace-nowrap" x-show="chat.currentRunId">
+            #<span x-text="chat.currentRunId"></span>
+          </div>
+        </div>
+
+        <!-- Messages -->
+        <div class="flex-1 overflow-y-auto p-4 space-y-3" id="chat-messages">
+          <template x-if="chat.messages.length === 0">
+            <div class="flex flex-col items-center justify-center h-full text-slate-500">
+              <div class="text-4xl mb-3">🌍</div>
+              <p class="text-xs text-center px-4">Escribe tu consulta. El bbox y zoom del mapa se envían automáticamente.</p>
+            </div>
+          </template>
+          <template x-for="(msg, i) in chat.messages" :key="i">
+            <div :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+              <div :class="msg.role === 'user' ? 'chat-bubble-user text-sm' : 'chat-bubble-agent'">
+                <div x-show="msg.role === 'agent'" class="text-xs text-slate-400 mb-1 font-normal not-prose">Agente</div>
+                <div x-html="msg.role === 'agent' ? renderMarkdown(msg.content) : escapeHtml(msg.content)"></div>
+                <div x-show="msg.steps && msg.steps.length" class="mt-2 flex flex-wrap gap-1 not-prose">
+                  <template x-for="(step, si) in msg.steps" :key="si">
+                    <button @click="openTrace(msg.runId)"
+                      :class="stepBadgeClass(step.verification_status)"
+                      class="step-badge cursor-pointer" :title="step.name">
+                      <span x-text="stepIcon(step.kind)"></span>
+                      <span class="ml-1 truncate max-w-[100px]" x-text="step.name"></span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </template>
+          <div x-show="chat.thinking" class="flex justify-start">
+            <div class="chat-bubble-agent flex items-center gap-2">
+              <div class="flex gap-1">
+                <span class="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style="animation-delay:0ms"></span>
+                <span class="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style="animation-delay:150ms"></span>
+                <span class="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style="animation-delay:300ms"></span>
+              </div>
+              <span class="text-xs text-slate-400">Procesando…</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div class="px-4 py-3 border-t border-slate-700 bg-slate-800 shrink-0">
+          <!-- Bbox display -->
+          <div class="text-xs text-slate-500 mb-2 flex items-center gap-2">
+            <span class="text-slate-600">📦 bbox:</span>
+            <span x-text="`W${chat.mapContext.bbox.west.toFixed(4)} S${chat.mapContext.bbox.south.toFixed(4)} E${chat.mapContext.bbox.east.toFixed(4)} N${chat.mapContext.bbox.north.toFixed(4)}`"></span>
+            <span class="ml-auto">zoom <span x-text="chat.mapContext.zoom" class="text-indigo-400 font-mono"></span></span>
+          </div>
+          <div class="flex gap-2">
+            <textarea x-model="chat.input" @keydown.enter.exact.prevent="sendChat()"
+              rows="2" placeholder="Escribe tu consulta… (Enter para enviar)"
+              class="flex-1 bg-slate-700 border border-slate-600 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:border-indigo-500">
+            </textarea>
+            <button @click="sendChat()" :disabled="!chat.agentId || !chat.input.trim() || chat.thinking"
+              class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white px-4 rounded-xl transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+                <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A1.5 1.5 0 005.135 9.25h6.115a.75.75 0 010 1.5H5.135a1.5 1.5 0 00-1.442 1.086l-1.414 4.926a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: embedded map -->
+      <div class="flex-1 relative">
+        <div id="chat-map" class="absolute inset-0"></div>
+
+        <!-- Layer legend overlay -->
+        <div x-show="chatMapLegend.length > 0 || chatMapFetching"
+          class="absolute bottom-3 left-3 z-[1000] bg-slate-900/90 border border-slate-700 rounded-xl shadow-lg overflow-hidden"
+          style="min-width:170px;max-width:220px">
+          <!-- Header -->
+          <div class="flex items-center justify-between px-3 py-2 border-b border-slate-700">
+            <span class="text-xs font-semibold text-slate-300">Capas</span>
+            <div class="flex items-center gap-2">
+              <!-- Fetching spinner -->
+              <div x-show="chatMapFetching" class="flex items-center gap-1 text-indigo-400">
+                <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                </svg>
+                <span class="text-xs">cargando…</span>
+              </div>
+              <button @click="clearChatMapFeatures()" class="text-slate-500 hover:text-red-400 text-xs leading-none">✕</button>
+            </div>
+          </div>
+          <!-- Layer list -->
+          <div class="py-1">
+            <template x-for="lyr in chatMapLegend" :key="lyr.name">
+              <div class="flex items-center gap-2 px-3 py-1.5">
+                <div class="w-3 h-3 rounded-sm shrink-0" :style="`background:${lyr.color}`"></div>
+                <span class="text-xs text-slate-300 flex-1 truncate" x-text="lyr.name"></span>
+                <span class="text-xs text-slate-500 shrink-0">
+                  <span x-show="lyr.loading" class="text-indigo-400">…</span>
+                  <span x-show="!lyr.loading" x-text="lyr.count"></span>
+                </span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── RUNS ──────────────────────────────────────── -->
+    <div x-show="page === 'runs'" class="flex-1 flex overflow-hidden">
+      <div class="w-80 border-r border-slate-700 flex flex-col overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-700 bg-slate-800 flex items-center justify-between">
+          <h2 class="text-sm font-semibold">Ejecuciones</h2>
+          <button @click="loadRuns()" class="text-slate-400 hover:text-white text-xs">↻</button>
+        </div>
+        <div class="px-3 py-2 border-b border-slate-700">
+          <input x-model="runs.filter" placeholder="Filtrar…" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-xs" />
+        </div>
+        <div class="flex-1 overflow-y-auto">
+          <template x-if="runs.loading">
+            <div class="text-center text-slate-500 text-sm py-8">Cargando…</div>
+          </template>
+          <template x-for="run in filteredRuns" :key="run.id">
+            <button @click="selectRun(run)"
+              :class="runs.selected?.id === run.id ? 'bg-indigo-600/20 border-l-2 border-indigo-500' : 'hover:bg-slate-700/50 border-l-2 border-transparent'"
+              class="w-full text-left px-4 py-3 border-b border-slate-700/50 transition-colors">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-mono text-slate-400">#<span x-text="run.id"></span></span>
+                <span :class="statusClass(run.status)" class="text-xs px-2 py-0.5 rounded-full" x-text="run.status"></span>
+              </div>
+              <div class="text-sm text-slate-200 truncate" x-text="run.input_json?.goal || '(sin objetivo)'"></div>
+              <div class="text-xs text-slate-500 mt-1" x-text="formatDate(run.created_at)"></div>
+            </button>
+          </template>
+          <div x-show="!runs.loading && filteredRuns.length === 0" class="text-center text-slate-500 text-sm py-8">Sin ejecuciones</div>
+        </div>
+      </div>
+
+      <div class="flex-1 flex flex-col overflow-hidden">
+        <template x-if="!runs.selected">
+          <div class="flex-1 flex items-center justify-center text-slate-500">
+            <div class="text-center"><div class="text-4xl mb-3">📋</div><p class="text-sm">Selecciona una ejecución para ver la traza</p></div>
+          </div>
+        </template>
+        <template x-if="runs.selected">
+          <div class="flex-1 flex flex-col overflow-hidden">
+            <div class="px-6 py-3 border-b border-slate-700 bg-slate-800 flex items-center gap-4 shrink-0">
+              <div>
+                <h3 class="font-semibold text-sm">Run #<span x-text="runs.selected.id"></span></h3>
+                <p class="text-xs text-slate-400" x-text="runs.selected.input_json?.goal || '(sin objetivo)'"></p>
+              </div>
+              <span :class="statusClass(runs.selected.status)" class="text-xs px-2 py-1 rounded-full" x-text="runs.selected.status"></span>
+              <div class="ml-auto flex gap-2">
+                <button @click="executeRun(runs.selected.id)" x-show="runs.selected.status === 'pending'"
+                  class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg">▶ Ejecutar</button>
+                <button @click="showRunOnMap(runs.selected)"
+                  class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1.5 rounded-lg">📍 Ver en mapa</button>
+              </div>
+            </div>
+            <div x-show="runs.selected.final_text || runs.selected.output_json?.final_text || runs.selected.output_json?.answer" class="px-6 py-4 bg-slate-800 border-b border-slate-700 shrink-0">
+              <div class="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wide">Respuesta</div>
+              <div class="prose prose-sm prose-invert max-w-none text-slate-200 text-sm"
+                x-html="renderMarkdown(runs.selected.final_text || runs.selected.output_json?.final_text || runs.selected.output_json?.answer || '')"></div>
+            </div>
+            <div class="flex-1 overflow-y-auto p-6 space-y-3">
+              <div class="text-xs text-slate-400 font-medium uppercase tracking-wide mb-4">Pasos de ejecución</div>
+              <template x-if="runs.trace.length === 0">
+                <div class="text-slate-500 text-sm text-center py-4">Sin pasos</div>
+              </template>
+              <template x-for="(step, i) in runs.trace" :key="step.id">
+                <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+                  <button @click="step._open = !step._open"
+                    class="w-full px-4 py-3 flex items-center gap-3 hover:bg-slate-700/50 transition-colors">
+                    <span class="text-base" x-text="stepIcon(step.kind)"></span>
+                    <div class="flex-1 text-left">
+                      <div class="text-sm font-medium" x-text="step.name"></div>
+                      <div class="text-xs text-slate-400 flex items-center gap-3 mt-0.5">
+                        <span x-text="step.kind"></span>
+                        <span x-show="step.latency_ms">⏱ <span x-text="step.latency_ms"></span>ms</span>
+                        <span x-show="step.error" class="text-red-400">⚠ error</span>
+                      </div>
+                    </div>
+                    <span x-show="step.verification_status"
+                      :class="stepBadgeClass(step.verification_status)"
+                      class="step-badge" x-text="step.verification_status"></span>
+                    <span class="text-slate-400 text-xs" x-text="step._open ? '▲' : '▼'"></span>
+                  </button>
+                  <div x-show="step._open" class="border-t border-slate-700 px-4 py-3 space-y-3">
+                    <div x-show="step.input_json">
+                      <div class="text-xs text-slate-400 mb-1">Input</div>
+                      <pre class="json-pre" x-text="JSON.stringify(step.input_json, null, 2)"></pre>
+                    </div>
+                    <div x-show="step.output_json">
+                      <div class="text-xs text-slate-400 mb-1">Output</div>
+                      <pre class="json-pre" x-text="JSON.stringify(step.output_json, null, 2)"></pre>
+                    </div>
+                    <div x-show="step.error" class="text-red-400 text-sm">
+                      <span class="font-medium">Error:</span> <span x-text="step.error"></span>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ── AGENTS ─────────────────────────────────────── -->
+    <div x-show="page === 'agents'" class="flex-1 flex flex-col overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-700 bg-slate-800 flex items-center justify-between">
+        <h2 class="text-base font-semibold">Agentes</h2>
+        <button @click="openAgentForm(null)" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded-lg">+ Nuevo agente</button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <template x-for="agent in agents" :key="agent.id">
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 hover:border-slate-600 transition-colors">
+              <div class="flex items-start justify-between mb-3">
+                <div>
+                  <h3 class="font-semibold" x-text="agent.name"></h3>
+                  <div class="flex items-center gap-2 mt-1">
+                    <span :class="agent.is_active ? 'bg-green-900 text-green-300' : 'bg-slate-700 text-slate-400'"
+                      class="text-xs px-2 py-0.5 rounded-full" x-text="agent.is_active ? 'Activo' : 'Inactivo'"></span>
+                    <span class="text-xs text-slate-400 bg-slate-700 px-2 py-0.5 rounded-full" x-text="agent.profile || 'default'"></span>
+                  </div>
+                </div>
+                <div class="flex gap-1 shrink-0">
+                  <button @click="openAgentForm(agent)" class="text-slate-400 hover:text-indigo-400 p-1.5 rounded-lg hover:bg-slate-700">✏️</button>
+                  <button @click="deleteAgent(agent)" class="text-slate-400 hover:text-red-400 p-1.5 rounded-lg hover:bg-slate-700">🗑️</button>
+                </div>
+              </div>
+              <p class="text-xs text-slate-400 mb-3 line-clamp-2" x-text="agent.system_prompt || '(sin prompt)'"></p>
+              <div class="text-xs text-slate-500 mb-1">Herramientas (<span x-text="(agent.tool_allowlist||[]).length"></span>):</div>
+              <div class="flex flex-wrap">
+                <template x-for="t in (agent.tool_allowlist||[])" :key="t">
+                  <span class="tag" x-text="t"></span>
+                </template>
+              </div>
+              <div class="mt-3 pt-3 border-t border-slate-700">
+                <button @click="chat.agentId = agent.id; setPage('chat')"
+                  class="w-full text-center bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 text-xs py-1.5 rounded-lg transition-colors">
+                  💬 Chatear
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Agent Form Modal -->
+      <div x-show="agentForm.open" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] flex flex-col">
+          <div class="px-6 py-4 border-b border-slate-700 flex items-center justify-between shrink-0">
+            <h3 class="font-semibold" x-text="agentForm.data.id ? 'Editar agente' : 'Nuevo agente'"></h3>
+            <button @click="agentForm.open = false" class="text-slate-400 hover:text-white">✕</button>
+          </div>
+          <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Nombre *</label>
+              <input x-model="agentForm.data.name" type="text"
+                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">System prompt</label>
+              <textarea x-model="agentForm.data.system_prompt" rows="3"
+                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm text-slate-400 mb-1">Perfil</label>
+                <select x-model="agentForm.data.profile"
+                  class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm">
+                  <option value="investigate">investigate</option>
+                  <option value="default">default</option>
+                </select>
+              </div>
+              <div class="flex items-end pb-1">
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" x-model="agentForm.data.is_active" class="rounded" />
+                  <span class="text-sm text-slate-300">Activo</span>
+                </label>
+              </div>
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <label class="text-sm text-slate-400">Herramientas permitidas</label>
+                <button @click="selectAllTools()" class="text-xs text-indigo-400 hover:text-indigo-300">Todas</button>
+              </div>
+              <div class="grid grid-cols-2 gap-1 max-h-48 overflow-y-auto bg-slate-900 rounded-lg p-3">
+                <template x-for="t in allToolNames" :key="t">
+                  <label class="flex items-center gap-2 cursor-pointer py-0.5">
+                    <input type="checkbox" :value="t"
+                      :checked="agentForm.data.tool_allowlist?.includes(t)"
+                      @change="toggleTool(t)" class="rounded" />
+                    <span class="text-xs text-slate-300" x-text="t"></span>
+                  </label>
+                </template>
+              </div>
+            </div>
+          </div>
+          <div class="px-6 py-4 border-t border-slate-700 flex gap-3 shrink-0">
+            <button @click="saveAgent()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2 rounded-lg">
+              <span x-text="agentForm.data.id ? 'Guardar cambios' : 'Crear agente'"></span>
+            </button>
+            <button @click="agentForm.open = false" class="bg-slate-700 hover:bg-slate-600 text-sm px-4 py-2 rounded-lg">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TOOLS ──────────────────────────────────────── -->
+    <div x-show="page === 'tools'" class="flex-1 flex flex-col overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-700 bg-slate-800">
+        <h2 class="text-base font-semibold mb-2">Catálogo de herramientas</h2>
+        <input x-model="toolSearch" placeholder="Buscar herramienta…"
+          class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
+      </div>
+      <div class="flex-1 overflow-y-auto p-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <template x-for="tool in filteredTools" :key="tool.name">
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 hover:border-slate-600 transition-colors">
+              <h3 class="font-mono text-sm text-indigo-300 mb-2" x-text="tool.name"></h3>
+              <p class="text-xs text-slate-400 mb-4" x-text="tool.description"></p>
+              <div x-show="tool.input_schema?.required?.length" class="mb-3">
+                <div class="text-xs text-slate-500 mb-1">Requeridos:</div>
+                <div class="flex flex-wrap">
+                  <template x-for="r in (tool.input_schema?.required||[])" :key="r">
+                    <span class="inline-block bg-red-900/40 text-red-300 text-xs px-2 py-0.5 rounded mr-1 mb-1" x-text="r"></span>
+                  </template>
+                </div>
+              </div>
+              <div x-show="Object.keys(tool.input_schema?.properties||{}).length">
+                <div class="text-xs text-slate-500 mb-1">Parámetros:</div>
+                <div class="flex flex-wrap">
+                  <template x-for="(prop, name) in (tool.input_schema?.properties||{})" :key="name">
+                    <span class="tag" x-text="`${name}: ${prop.type||'?'}`"></span>
+                  </template>
+                </div>
+              </div>
+              <button @click="tool._showSchema = !tool._showSchema" class="mt-3 text-xs text-slate-500 hover:text-slate-300">
+                <span x-text="tool._showSchema ? 'Ocultar ▲' : 'Ver schema ▼'"></span>
+              </button>
+              <div x-show="tool._showSchema" class="mt-2">
+                <pre class="json-pre" x-text="JSON.stringify(tool.input_schema, null, 2)"></pre>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── LAYERS ─────────────────────────────────────── -->
+    <div x-show="page === 'layers'" class="flex-1 flex flex-col overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-700 bg-slate-800">
+        <h2 class="text-base font-semibold mb-2">Catálogo de capas GIS</h2>
+        <input x-model="layerSearch" placeholder="Buscar capa…"
+          class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
+      </div>
+      <div class="flex-1 overflow-y-auto p-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <template x-for="layer in filteredLayers" :key="layer.name">
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 hover:border-slate-600 transition-colors">
+              <div class="flex items-start justify-between mb-2">
+                <h3 class="font-semibold text-sm" x-text="layer.name"></h3>
+                <span :class="geomKindClass(layer.geometry_kind)"
+                  class="text-xs px-2 py-0.5 rounded-full" x-text="layer.geometry_kind||'?'"></span>
+              </div>
+              <div class="text-xs text-slate-400 space-y-1 mb-3">
+                <div>Tabla: <span class="font-mono text-slate-300" x-text="(layer.schema?layer.schema+'.':'')+layer.table"></span></div>
+                <div>Geom: <span class="font-mono text-slate-300" x-text="layer.geom_col||'the_geom'"></span></div>
+                <div>SRID: <span class="font-mono text-slate-300" x-text="layer.srid||'4326'"></span></div>
+              </div>
+              <div x-show="(layer.fields||[]).length">
+                <div class="text-xs text-slate-500 mb-1">Campos:</div>
+                <div class="flex flex-wrap">
+                  <template x-for="f in (layer.fields||[])" :key="f">
+                    <span class="tag" x-text="f"></span>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MAP (standalone) ──────────────────────────── -->
+    <div x-show="page === 'map'" class="flex-1 flex flex-col overflow-hidden">
+      <div class="px-6 py-3 border-b border-slate-700 bg-slate-800 flex items-center gap-4 shrink-0">
+        <h2 class="text-base font-semibold">Mapa</h2>
+        <span class="text-xs text-slate-400" x-text="`${mapFeatures.length} features`"></span>
+        <div class="ml-auto flex gap-2">
+          <button @click="clearMapFeatures()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1.5 rounded-lg">🗑️ Limpiar</button>
+          <button @click="fitMapToFeatures()" x-show="mapFeatures.length > 0"
+            class="bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-1.5 rounded-lg">⊞ Ajustar</button>
+        </div>
+      </div>
+      <div class="px-6 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
+        <div class="flex gap-2 items-center">
+          <textarea x-model="mapGeoJsonInput" rows="2" placeholder='Pega GeoJSON aquí…'
+            class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-xs font-mono resize-none focus:outline-none focus:border-indigo-500"></textarea>
+          <button @click="addGeoJsonToMap()" class="bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-2 rounded-lg whitespace-nowrap">➕ Añadir</button>
+        </div>
+        <div x-show="mapError" class="text-red-400 text-xs mt-1" x-text="mapError"></div>
+      </div>
+      <div class="flex-1 relative">
+        <div id="map" class="absolute inset-0"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Toast -->
+<div x-show="toast.show" x-transition
+  :class="toast.type === 'error' ? 'bg-red-800 border-red-700' : 'bg-slate-700 border-slate-600'"
+  class="fixed bottom-6 right-6 border rounded-xl px-4 py-3 text-sm shadow-2xl z-[9999] max-w-sm">
+  <span x-text="toast.message"></span>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     SCRIPTS
+═══════════════════════════════════════════════════════════ -->
+<script>
+// ── BASEMAP CATALOG ──────────────────────────────────────
+const BASEMAPS = [
+  { name:"ESRI World Imagery", type:"TMS", bm_url:"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", bm_max_zoom_native:19, bm_attribution:"&copy; <a href='https://www.esri.com'>ESRI</a> World Imagery", bm_category:"ESRI" },
+  { name:"Google Maps", type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
+  { name:"Google Satélite Hybrid", type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
+  { name:"Google Satélite", type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
+  { name:"CARTO Light", type:"TMS", bm_url:"https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", bm_max_zoom_native:25, bm_attribution:"&copy; OpenStreetMap, &copy; CARTO", bm_category:"CARTO" },
+  { name:"CARTO Positron Labels", type:"TMS", bm_url:"https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap, &copy; CARTO", bm_category:"CARTO" },
+  { name:"CARTO Positron", type:"TMS", bm_url:"https://basemaps.cartocdn.com/rastertiles/light_nolabels/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap, &copy; CARTO", bm_category:"CARTO" },
+  { name:"IGN Catastro", type:"TMS", bm_url:"https://www.ign.es/wmts/ign-base/?Request=GetTile&service=WMTS&layer=IGNBaseTodo&format=image/jpeg&SRS=EPSG:4326&TileMatrixSet=GoogleMapsCompatible&TileMatrix={z}&TileRow={y}&tileCol={x}", bm_max_zoom_native:20, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"IGN Catastro B/N", type:"TMS", bm_url:"https://www.ign.es/wmts/ign-base/?Request=GetTile&service=WMTS&layer=IGNBase-gris&format=image/jpeg&SRS=EPSG:4326&TileMatrixSet=GoogleMapsCompatible&TileMatrix={z}&TileRow={y}&tileCol={x}", bm_max_zoom_native:20, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"IGN Raster", type:"WMS", bm_url:"http://www.ign.es/wms-inspire/mapa-raster?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"mtn_rasterizado", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"PNOA Máx. Actualidad", type:"TMS", bm_url:"http://www.ign.es/wmts/pnoa-ma?&SERVICE=WMTS&REQUEST=GetTile&LAYER=OI.OrthoimageCoverage&FORMAT=image/png&TILEMATRIXSET=GoogleMapsCompatible&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"ORTOFOTO" },
+  { name:"OSM General", type:"TMS", bm_url:"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
+  { name:"OSM B/N", type:"TMS", bm_url:"http://tiles.wmflabs.org/bw-mapnik/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
+  { name:"OSM Mundo", type:"WMS", bm_url:"http://ows.mundialis.de/services/service?", conf_version:"1.1.1", conf_format:"image/png", conf_layers:"SRTM30-Colored-Hillshade", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
+  { name:"Catastro INSPIRE Building", type:"WMS", bm_url:"http://ovc.catastro.meh.es/cartografia/INSPIRE/spadgcwms.aspx?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"BU.Building", bm_max_zoom_native:20, bm_attribution:"Dirección General del Catastro", bm_category:"INSPIRE" },
+  { name:"IGN Unidades Administrativas", type:"WMS", bm_url:"http://ovc.catastro.meh.es/Cartografia/WMS/ServidorWMS.aspx?", conf_version:"1.1.1", conf_format:"image/png", conf_layers:"Catastro", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"Catastro Navarra", type:"WMS", bm_url:"https://inspire.navarra.es/services/CP/wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"CP:CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
+  { name:"Catastro País Vasco - Álava", type:"WMS", bm_url:"https://geo.araba.eus/WMS_INSPIRE_CP", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"CP.CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
+  { name:"Catastro País Vasco - Guipúzcoa", type:"WMS", bm_url:"https://b5m.gipuzkoa.eus/inspire/wms/gipuzkoa_wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"cp.CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
+  { name:"Catastro Portugal", type:"TMS", bm_url:"https://map.valentim.org/otmpt/{z}/{x}/{y}.png", bm_max_zoom_native:17, bm_attribution:"", bm_category:"INTERNACIONAL" },
+  { name:"Catastro Francia", type:"WMS", bm_url:"http://mapsref.brgm.fr/wxs/refcom-brgm/refign?VERSION=1.3.0", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"PARVEC_PARCELLE", bm_max_zoom_native:18, bm_attribution:"", bm_category:"INTERNACIONAL" },
+  { name:"Catastro Alemania TopoPlus", type:"WMS", bm_url:"https://sgx.geodatenzentrum.de/wms_topplus_open?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"web", bm_max_zoom_native:18, bm_attribution:"", bm_category:"INTERNACIONAL" },
+  { name:"GeoARBA - Buenos Aires", type:"WMS", bm_url:"https://geo.arba.gov.ar/geoserver/idera/wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"Grupo IDERA", bm_max_zoom_native:20, bm_attribution:"GeoARBA", bm_category:"INTERNACIONAL" },
+];
+
+// Build a Leaflet layer from basemap config
+function buildBasemapLayer(bm) {
+  if (bm.type === 'WMS') {
+    return L.tileLayer.wms(bm.bm_url, {
+      layers: bm.conf_layers || '',
+      format: bm.conf_format || 'image/png',
+      version: bm.conf_version || '1.1.1',
+      transparent: true,
+      attribution: bm.bm_attribution || '',
+      maxZoom: bm.bm_max_zoom_native || 18,
+      maxNativeZoom: bm.bm_max_zoom_native || 18,
+    });
+  }
+  const opts = {
+    attribution: bm.bm_attribution || '',
+    maxZoom: 22,
+    maxNativeZoom: bm.bm_max_zoom_native || 18,
+  };
+  if (bm.subdomains) opts.subdomains = bm.subdomains;
+  else if (bm.bm_url.includes('{s}')) opts.subdomains = ['a','b','c'];
+  return L.tileLayer(bm.bm_url, opts);
+}
+
+// Custom Leaflet control: basemap switcher
+const BasemapSwitcherControl = L.Control.extend({
+  options: { position: 'topright' },
+  _currentIndex: 0,
+  _currentLayer: null,
+
+  onAdd(map) {
+    this._map = map;
+    const wrap = L.DomUtil.create('div', 'bm-control leaflet-bar');
+    L.DomEvent.disableClickPropagation(wrap);
+    L.DomEvent.disableScrollPropagation(wrap);
+
+    // Toggle button
+    this._toggle = L.DomUtil.create('div', 'bm-toggle', wrap);
+    this._toggleLabel = L.DomUtil.create('span', '', this._toggle);
+    this._toggleLabel.textContent = '🗺 Mapa base';
+    const arrow = L.DomUtil.create('span', '', this._toggle);
+    arrow.textContent = '▾';
+    arrow.style.marginLeft = 'auto';
+
+    // Panel
+    this._panel = L.DomUtil.create('div', 'bm-panel', wrap);
+
+    // Build panel grouped by category
+    const categories = {};
+    BASEMAPS.forEach((bm, i) => {
+      if (!categories[bm.bm_category]) categories[bm.bm_category] = [];
+      categories[bm.bm_category].push({ bm, i });
+    });
+
+    for (const [cat, items] of Object.entries(categories)) {
+      const catEl = L.DomUtil.create('div', 'bm-category', this._panel);
+      catEl.textContent = cat;
+      items.forEach(({ bm, i }) => {
+        const item = L.DomUtil.create('div', 'bm-item', this._panel);
+        const dot = L.DomUtil.create('span', 'bm-dot', item);
+        const label = L.DomUtil.create('span', '', item);
+        label.textContent = bm.name;
+        if (i === this._currentIndex) { item.classList.add('active'); }
+        L.DomEvent.on(item, 'click', () => this.selectBasemap(i, item));
+        item._bmIndex = i;
+        item._bmDot = dot;
+      });
+    }
+
+    // Set initial basemap
+    this._currentLayer = buildBasemapLayer(BASEMAPS[0]);
+    this._currentLayer.addTo(map);
+    this._toggleLabel.textContent = '🗺 ' + BASEMAPS[0].name;
+
+    // Toggle panel
+    L.DomEvent.on(this._toggle, 'click', () => {
+      const open = this._panel.classList.toggle('open');
+      arrow.textContent = open ? '▴' : '▾';
+    });
+
+    // Close on map click
+    map.on('click', () => {
+      this._panel.classList.remove('open');
+      arrow.textContent = '▾';
+    });
+
+    return wrap;
+  },
+
+  selectBasemap(index, clickedEl) {
+    if (this._currentLayer) this._map.removeLayer(this._currentLayer);
+    this._currentIndex = index;
+    this._currentLayer = buildBasemapLayer(BASEMAPS[index]);
+    this._currentLayer.addTo(this._map);
+    this._currentLayer.bringToBack();
+    this._toggleLabel.textContent = '🗺 ' + BASEMAPS[index].name;
+    // Update active state
+    this._panel.querySelectorAll('.bm-item').forEach(el => el.classList.remove('active'));
+    if (clickedEl) clickedEl.classList.add('active');
+    this._panel.classList.remove('open');
+  },
+});
+
+// ── ALPINE APP ───────────────────────────────────────────
+function app() {
+  return {
+    token: localStorage.getItem('ga_token') || '',
+    loginForm: { username: '', password: '' },
+    loginError: '', loginLoading: false,
+    page: 'chat',
+
+    chat: {
+      agentId: '', input: '', messages: [], thinking: false, currentRunId: null,
+      mapContext: { zoom: 16, bbox: { west: -3.71, south: 40.41, east: -3.70, north: 40.42 } },
+    },
+
+    runs: { list: [], selected: null, trace: [], filter: '', loading: false },
+    agents: [],
+    agentForm: { open: false, data: {} },
+    toolsList: [], toolSearch: '',
+    layersList: [], layerSearch: '',
+
+    // Standalone map
+    mapInstance: null, mapLayer: null, mapFeatures: [],
+    mapGeoJsonInput: '', mapError: '',
+
+    // Chat map
+    chatMapInstance: null, chatMapLayer: null, chatMapFeatures: [],
+    chatMapLegend: [],   // [{name, color, count, loading}]
+    chatMapFetching: false,
+    chatLayerColorMap: {},
+    _chatLayerColorIdx: 0,
+
+    toast: { show: false, message: '', type: 'info', _timer: null },
+
+    // ── INIT ─────────────────────────────────────────────
+    async init() {
+      if (this.token) await this.loadAll();
+      this.$watch('page', async (v) => {
+        if (v === 'chat') { await this.$nextTick(); this.initChatMap(); }
+        if (v === 'map')  { await this.$nextTick(); this.initMap(); }
+        if (v === 'runs') this.loadRuns();
+        if (v === 'agents') this.loadAgents();
+        if (v === 'tools') this.loadTools();
+        if (v === 'layers') this.loadLayers();
+      });
+      // Init chat map on first load
+      if (this.token) { await this.$nextTick(); this.initChatMap(); }
+    },
+
+    async loadAll() {
+      await Promise.all([this.loadAgents(), this.loadTools(), this.loadLayers()]);
+    },
+
+    // ── AUTH ─────────────────────────────────────────────
+    async login() {
+      this.loginLoading = true; this.loginError = '';
+      try {
+        const r = await fetch('/api/token/', { method:'POST',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify(this.loginForm) });
+        if (!r.ok) { this.loginError = 'Usuario o contraseña incorrectos'; return; }
+        const d = await r.json();
+        this.token = d.token;
+        localStorage.setItem('ga_token', d.token);
+        await this.loadAll();
+        await this.$nextTick(); this.initChatMap();
+        this.setPage('chat');
+      } catch(e) { this.loginError = 'Error de conexión'; }
+      finally { this.loginLoading = false; }
+    },
+    logout() { this.token = ''; localStorage.removeItem('ga_token'); },
+
+    // ── API ──────────────────────────────────────────────
+    authHeaders() { return { 'Authorization':`Token ${this.token}`, 'Content-Type':'application/json' }; },
+    async api(method, path, body=null) {
+      const opts = { method, headers: this.authHeaders() };
+      if (body !== null) opts.body = JSON.stringify(body);
+      const r = await fetch(path, opts);
+      if (r.status === 401) { this.logout(); throw new Error('Unauthorized'); }
+      const text = await r.text();
+      try { return { ok:r.ok, status:r.status, data: text ? JSON.parse(text) : null }; }
+      catch { return { ok:r.ok, status:r.status, data:text }; }
+    },
+    showToast(message, type='info') {
+      clearTimeout(this.toast._timer);
+      this.toast = { show:true, message, type, _timer: setTimeout(() => { this.toast.show=false; }, 4000) };
+    },
+    setPage(p) { this.page = p; },
+
+    // ── CHAT MAP ─────────────────────────────────────────
+    initChatMap() {
+      if (this.chatMapInstance) { this.chatMapInstance.invalidateSize(); return; }
+      const el = document.getElementById('chat-map');
+      if (!el) return;
+      this.chatMapInstance = L.map('chat-map').setView([40.416, -3.703], 16);
+      new BasemapSwitcherControl().addTo(this.chatMapInstance);
+      this.chatMapLayer = L.featureGroup().addTo(this.chatMapInstance);
+
+      // Keep mapContext in sync with map view
+      const updateCtx = () => {
+        const b = this.chatMapInstance.getBounds();
+        this.chat.mapContext = {
+          zoom: this.chatMapInstance.getZoom(),
+          bbox: { west: +b.getWest().toFixed(6), south: +b.getSouth().toFixed(6),
+                  east: +b.getEast().toFixed(6), north: +b.getNorth().toFixed(6) },
+        };
+      };
+      this.chatMapInstance.on('moveend zoomend load', updateCtx);
+      updateCtx();
+    },
+
+    clearChatMapFeatures() {
+      if (this.chatMapLayer) this.chatMapLayer.clearLayers();
+      this.chatMapFeatures = [];
+      this.chatMapLegend = [];
+      this.chatLayerColorMap = {};
+      this._chatLayerColorIdx = 0;
+    },
+
+    getLayerColor(name) {
+      const PALETTE = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f97316','#84cc16'];
+      if (!this.chatLayerColorMap[name]) {
+        this.chatLayerColorMap[name] = PALETTE[this._chatLayerColorIdx % PALETTE.length];
+        this._chatLayerColorIdx++;
+      }
+      return this.chatLayerColorMap[name];
+    },
+
+    // ── CHAT ─────────────────────────────────────────────
+    async sendChat() {
+      const goal = this.chat.input.trim();
+      if (!goal || !this.chat.agentId || this.chat.thinking) return;
+      this.chat.messages.push({ role:'user', content:goal });
+      this.chat.input = ''; this.chat.thinking = true;
+      this.scrollChat();
+
+      try {
+        const payload = {
+          agent: parseInt(this.chat.agentId),
+          input_json: { goal, map_context: { ...this.chat.mapContext } },
+        };
+        const create = await this.api('POST', '/api/runs/', payload);
+        if (!create.ok) {
+          this.chat.messages.push({ role:'agent', content:`Error al crear run: ${JSON.stringify(create.data)}` });
+          return;
+        }
+        const runId = create.data.id;
+        this.chat.currentRunId = runId;
+        const exec = await this.api('POST', `/api/runs/${runId}/execute/`);
+        if (!exec.ok) {
+          this.chat.messages.push({ role:'agent', content:`Error al ejecutar: ${JSON.stringify(exec.data)}` });
+          return;
+        }
+        const run = exec.data;
+        const answer = run.final_text || run.output_json?.final_text || run.output_json?.answer || run.output_json?.summary || '(Sin respuesta del agente)';
+        const stepsResp = await this.api('GET', `/api/runs/${runId}/steps/`);
+        const steps = stepsResp.ok ? (stepsResp.data?.results || stepsResp.data || []) : [];
+        this.chat.messages.push({ role:'agent', content: answer||'(Sin respuesta)', runId, steps: steps.slice(0,10) });
+        if (this.page === 'runs') this.loadRuns();
+        // Mostrar geometrías GeoJSON si las hay en los steps
+        this.extractAndAddGeoJsonFromSteps(steps, 'chat');
+        // Auto-fetch geometrías de las capas consultadas y pintarlas en el mapa
+        this.autoFetchLayerGeoms(steps, this.chat.mapContext.bbox, this.chat.agentId);
+      } catch(e) {
+        this.chat.messages.push({ role:'agent', content:`Error: ${e.message}` });
+      } finally {
+        this.chat.thinking = false; this.scrollChat();
+      }
+    },
+
+    scrollChat() {
+      this.$nextTick(() => { const el = document.getElementById('chat-messages'); if(el) el.scrollTop = el.scrollHeight; });
+    },
+
+    extractAndAddGeoJsonFromSteps(steps, target='map') {
+      const features = [];
+      for (const step of steps) {
+        const data = (step.output_json?.data) || step.output_json || {};
+        if (data?.items) {
+          for (const item of data.items) {
+            for (const key of ['geom_geojson','intersection_geojson','geometry']) {
+              if (item[key]) {
+                try { features.push({ type:'Feature', geometry: typeof item[key]==='string' ? JSON.parse(item[key]) : item[key], properties:{...item} }); }
+                catch {}
+              }
+            }
+          }
+        }
+      }
+      if (features.length > 0) {
+        this.addFeaturesToMapTarget(features, target);
+        this.showToast(`${features.length} features añadidas al mapa`);
+      }
+    },
+
+    // ── AUTO-FETCH LAYER GEOMETRIES ──────────────────────
+    async autoFetchLayerGeoms(steps, bbox, agentId) {
+      // Collect unique layers with their result counts from tool steps
+      const layerCounts = new Map(); // layer -> count
+
+      for (const step of steps) {
+        const args  = step.input_json?.args  || {};
+        const data  = step.output_json?.data || step.output_json || {};
+
+        // spatial.query_layer / spatial.nearby
+        const ln = args.layer || data.layer;
+        if (ln) layerCounts.set(ln, Math.max(layerCounts.get(ln)||0, data.count_total||0));
+
+        // spatial.context_pack
+        for (const l of (data.layers || [])) {
+          if (l.name && l.count > 0) layerCounts.set(l.name, Math.max(layerCounts.get(l.name)||0, l.count));
+        }
+
+        // spatial.intersects — source + target
+        if (args.source_layer) layerCounts.set(args.source_layer, Math.max(layerCounts.get(args.source_layer)||0, 1));
+        if (args.target_layer) layerCounts.set(args.target_layer, Math.max(layerCounts.get(args.target_layer)||0, 1));
+      }
+
+      if (layerCounts.size === 0) return;
+
+      // Sort by count desc, limit to 5 layers
+      const topLayers = [...layerCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([name, count]) => ({ name, count }));
+
+      // Pre-populate legend with loading state
+      this.chatMapFetching = true;
+      for (const { name, count } of topLayers) {
+        const color = this.getLayerColor(name);
+        const existing = this.chatMapLegend.find(l => l.name === name);
+        if (!existing) {
+          this.chatMapLegend.push({ name, color, count, loading: true });
+        }
+      }
+
+      // Fetch geometries in parallel
+      await Promise.all(topLayers.map(({ name }) =>
+        this.fetchLayerGeomForChat(name, bbox, agentId)
+      ));
+
+      this.chatMapFetching = false;
+    },
+
+    async fetchLayerGeomForChat(layerName, bbox, agentId) {
+      const color = this.getLayerColor(layerName);
+      try {
+        const create = await this.api('POST', '/api/runs/', {
+          agent: parseInt(agentId),
+          input_json: {
+            goal: `_geom:${layerName}`,
+            tool_call: {
+              name: 'spatial.query_layer',
+              args: { layer: layerName, bbox, include_geom: true, simplify_meters: 5, limit: 50 },
+            },
+          },
+        });
+        if (!create.ok) return;
+
+        const exec = await this.api('POST', `/api/runs/${create.data.id}/execute/`);
+        if (!exec.ok) return;
+
+        const items = exec.data.output_json?.data?.items || [];
+        const features = items.flatMap(item => {
+          if (!item.geom_geojson) return [];
+          try {
+            return [{ type:'Feature', geometry: JSON.parse(item.geom_geojson), properties: {...item, _layer: layerName} }];
+          } catch { return []; }
+        });
+
+        // Update legend entry
+        const entry = this.chatMapLegend.find(l => l.name === layerName);
+        if (entry) { entry.loading = false; entry.count = items.length; }
+
+        if (features.length > 0) {
+          // Add with per-layer color
+          if (!this.chatMapInstance) return;
+          for (const f of features) {
+            try {
+              L.geoJSON(f, {
+                style: { color, weight: 1.5, fillColor: color, fillOpacity: 0.25 },
+                pointToLayer: (_, ll) => L.circleMarker(ll, { radius:5, color, fillColor: color, fillOpacity:0.8, weight:1 }),
+                onEachFeature: (ft, lyr) => {
+                  const props = ft.properties || {};
+                  const html = Object.entries(props)
+                    .filter(([k]) => !k.endsWith('_geojson') && !k.startsWith('_'))
+                    .slice(0, 12)
+                    .map(([k,v]) => `<b>${k}:</b> ${v ?? ''}`)
+                    .join('<br>');
+                  if (html) lyr.bindPopup(`<div style="font-size:11px;max-height:180px;overflow:auto;max-width:220px"><b style="color:${color}">${layerName}</b><br>${html}</div>`);
+                },
+              }).addTo(this.chatMapLayer);
+              this.chatMapFeatures.push(f);
+            } catch {}
+          }
+        }
+      } catch {
+        const entry = this.chatMapLegend.find(l => l.name === layerName);
+        if (entry) { entry.loading = false; entry.count = 0; }
+      }
+    },
+
+    addFeaturesToMapTarget(features, target) {
+      const mapInst = target === 'chat' ? this.chatMapInstance : this.mapInstance;
+      const mapLyr  = target === 'chat' ? this.chatMapLayer    : this.mapLayer;
+      const featArr = target === 'chat' ? this.chatMapFeatures  : this.mapFeatures;
+      if (!mapInst) return;
+      if (!mapLyr) return;
+      const added = [];
+      for (const f of features) {
+        try {
+          const layer = L.geoJSON(f, {
+            style: { color: this.randomColor(), weight: 2, fillOpacity: 0.3 },
+            pointToLayer: (ft, ll) => L.circleMarker(ll, { radius:6, color:'#6366f1', fillOpacity:0.8 }),
+            onEachFeature: (ft, lyr) => {
+              const props = ft.properties || {};
+              const html = Object.entries(props).filter(([k]) => !k.endsWith('_geojson'))
+                .map(([k,v]) => `<b>${k}:</b> ${v}`).join('<br>');
+              if (html) lyr.bindPopup(`<div style="font-size:12px;max-height:200px;overflow:auto">${html}</div>`);
+            },
+          });
+          mapLyr.addLayer(layer);
+          added.push(f);
+          featArr.push(f);
+        } catch {}
+      }
+      if (added.length > 0) {
+        try { mapInst.fitBounds(mapLyr.getBounds(), { padding:[20,20], maxZoom:18 }); } catch {}
+      }
+    },
+
+    // ── RUNS ─────────────────────────────────────────────
+    async loadRuns() {
+      this.runs.loading = true;
+      try {
+        const r = await this.api('GET', '/api/runs/?ordering=-created_at&limit=100');
+        if (r.ok) this.runs.list = r.data?.results || r.data || [];
+      } finally { this.runs.loading = false; }
+    },
+    get filteredRuns() {
+      const q = this.runs.filter.toLowerCase();
+      if (!q) return this.runs.list;
+      return this.runs.list.filter(r =>
+        (r.id+'').includes(q) || (r.status||'').includes(q) || (r.input_json?.goal||'').toLowerCase().includes(q)
+      );
+    },
+    async selectRun(run) {
+      this.runs.selected = run; this.runs.trace = [];
+      const r = await this.api('GET', `/api/runs/${run.id}/steps/`);
+      if (r.ok) this.runs.trace = (r.data?.results || r.data || []).map(s => ({...s, _open:false}));
+      const rd = await this.api('GET', `/api/runs/${run.id}/`);
+      if (rd.ok) this.runs.selected = rd.data;
+    },
+    async executeRun(id) {
+      const r = await this.api('POST', `/api/runs/${id}/execute/`);
+      if (r.ok) { await this.selectRun(r.data); this.showToast('Run ejecutado'); }
+      else this.showToast('Error al ejecutar run','error');
+    },
+    showRunOnMap(run) {
+      this.setPage('map');
+      this.$nextTick(() => this.extractAndAddGeoJsonFromSteps(this.runs.trace, 'map'));
+    },
+    openTrace(runId) {
+      const run = this.runs.list.find(r => r.id === runId);
+      if (run) { this.selectRun(run); this.setPage('runs'); }
+    },
+
+    // ── AGENTS ───────────────────────────────────────────
+    async loadAgents() {
+      const r = await this.api('GET', '/api/agents/');
+      if (r.ok) this.agents = r.data?.results || r.data || [];
+    },
+    openAgentForm(agent) {
+      this.agentForm.data = agent
+        ? {...agent, tool_allowlist: [...(agent.tool_allowlist||[])]}
+        : { name:'', system_prompt:'Eres un agente espacial analítico.', profile:'investigate', is_active:true, tool_allowlist:[] };
+      this.agentForm.open = true;
+    },
+    get allToolNames() { return this.toolsList.map(t => t.name).sort(); },
+    toggleTool(name) {
+      const list = this.agentForm.data.tool_allowlist || [];
+      const idx = list.indexOf(name);
+      idx >= 0 ? list.splice(idx,1) : list.push(name);
+      this.agentForm.data.tool_allowlist = [...list];
+    },
+    selectAllTools() { this.agentForm.data.tool_allowlist = [...this.allToolNames]; },
+    async saveAgent() {
+      const d = this.agentForm.data;
+      if (!d.name) { this.showToast('El nombre es requerido','error'); return; }
+      const r = await this.api(d.id?'PATCH':'POST', d.id?`/api/agents/${d.id}/`:'/api/agents/', d);
+      if (r.ok) { await this.loadAgents(); this.agentForm.open = false; this.showToast(d.id?'Agente actualizado':'Agente creado'); }
+      else this.showToast(`Error: ${JSON.stringify(r.data)}`,'error');
+    },
+    async deleteAgent(agent) {
+      if (!confirm(`¿Eliminar agente "${agent.name}"?`)) return;
+      const r = await this.api('DELETE', `/api/agents/${agent.id}/`);
+      if (r.ok || r.status===204) { await this.loadAgents(); this.showToast('Agente eliminado'); }
+      else this.showToast('Error al eliminar','error');
+    },
+
+    // ── TOOLS ────────────────────────────────────────────
+    async loadTools() {
+      const r = await this.api('GET', '/api/tools/');
+      if (r.ok) this.toolsList = (r.data||[]).map(t => ({...t, _showSchema:false}));
+    },
+    get filteredTools() {
+      const q = this.toolSearch.toLowerCase();
+      if (!q) return this.toolsList;
+      return this.toolsList.filter(t => t.name.toLowerCase().includes(q)||(t.description||'').toLowerCase().includes(q));
+    },
+
+    // ── LAYERS ───────────────────────────────────────────
+    async loadLayers() {
+      const r = await this.api('GET', '/api/gis/layers/');
+      if (r.ok) this.layersList = r.data || [];
+    },
+    get filteredLayers() {
+      const q = this.layerSearch.toLowerCase();
+      if (!q) return this.layersList;
+      return this.layersList.filter(l => l.name.toLowerCase().includes(q)||(l.table||'').toLowerCase().includes(q));
+    },
+
+    // ── MAP (standalone) ─────────────────────────────────
+    initMap() {
+      if (this.mapInstance) { this.mapInstance.invalidateSize(); return; }
+      this.mapInstance = L.map('map').setView([40.416, -3.703], 13);
+      new BasemapSwitcherControl().addTo(this.mapInstance);
+      this.mapLayer = L.featureGroup().addTo(this.mapInstance);
+    },
+    addGeoJsonToMap() {
+      this.mapError = '';
+      try {
+        const geojson = JSON.parse(this.mapGeoJsonInput.trim());
+        const features = geojson.type==='FeatureCollection' ? geojson.features :
+          geojson.type==='Feature' ? [geojson] : [{type:'Feature',geometry:geojson,properties:{}}];
+        this.addFeaturesToMapTarget(features, 'map');
+        this.mapGeoJsonInput = '';
+        this.showToast(`${features.length} features añadidas`);
+      } catch(e) { this.mapError = `JSON inválido: ${e.message}`; }
+    },
+    fitMapToFeatures() {
+      if (this.mapLayer&&this.mapInstance) try { this.mapInstance.fitBounds(this.mapLayer.getBounds(),{padding:[20,20]}); } catch {}
+    },
+    clearMapFeatures() { if(this.mapLayer) this.mapLayer.clearLayers(); this.mapFeatures = []; },
+
+    // ── HELPERS ──────────────────────────────────────────
+    formatDate(d) { if(!d)return''; return new Date(d).toLocaleString('es-ES',{dateStyle:'short',timeStyle:'short'}); },
+    statusClass(s) {
+      return ({pending:'bg-slate-700 text-slate-300',running:'bg-blue-900 text-blue-300',
+               completed:'bg-green-900 text-green-300',failed:'bg-red-900 text-red-300'})[s]||'bg-slate-700 text-slate-300';
+    },
+    stepIcon(kind) { return ({tool:'🔧',plan:'📋',verify:'✅',replan:'🔄',synthesize:'✍️',llm:'🤖'})[kind]||'•'; },
+    stepBadgeClass(status) {
+      return ({verified:'bg-green-900 text-green-300',refuted:'bg-red-900 text-red-300',
+               inconclusive:'bg-amber-900 text-amber-300',not_evaluated:'bg-slate-700 text-slate-400'})[status]||'bg-slate-700 text-slate-400';
+    },
+    geomKindClass(kind) {
+      return ({point:'bg-blue-900 text-blue-300',line:'bg-green-900 text-green-300',
+               polygon:'bg-amber-900 text-amber-300',multipolygon:'bg-orange-900 text-orange-300',
+               multilinestring:'bg-teal-900 text-teal-300'})[(kind||'').toLowerCase()]||'bg-slate-700 text-slate-400';
+    },
+    renderMarkdown(text) { if(!text)return''; try{return marked.parse(text);}catch{return this.escapeHtml(text);} },
+    escapeHtml(text) { const d=document.createElement('div'); d.textContent=text; return d.innerHTML; },
+    randomColor() {
+      return ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899'][Math.floor(Math.random()*7)];
+    },
+  };
+}
+</script>
+</body>
+</html>
