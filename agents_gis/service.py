@@ -1,11 +1,21 @@
 from django.conf import settings
-from django.db import connections
+from django.db import connections, close_old_connections
 
 
 def get_gis_connection():
     """Devuelve la conexión de BD configurada para las herramientas GIS."""
     alias = getattr(settings, "AGENTS_GIS_DB_ALIAS", "default")
-    return connections[alias]
+    # Cerrar conexiones antiguas / caducadas antes de cada uso para evitar
+    # InterfaceError: connection already closed en scripts de larga duración.
+    close_old_connections()
+    conn = connections[alias]
+    # Forzar reconexión si la conexión subyacente está cerrada.
+    try:
+        conn.ensure_connection()
+    except Exception:
+        conn.close()
+        conn.ensure_connection()
+    return conn
 
 
 def get_gis_schema() -> str:
@@ -59,9 +69,28 @@ def point_in_layer_srid(srid: int) -> str:
     return f"ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), {srid})"
 
 
+def _json_safe(value):
+    """Convierte tipos no serializables a JSON a su representación string."""
+    import datetime
+    import decimal
+    import uuid
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return None
+    return value
+
+
 def _fetchall_dict(cursor):
     cols = [c[0] for c in cursor.description]
-    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    return [
+        {k: _json_safe(v) for k, v in zip(cols, row)}
+        for row in cursor.fetchall()
+    ]
 
 
 def _get_layer_cfg(layer_name: str):

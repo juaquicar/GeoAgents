@@ -10,6 +10,7 @@ from .memory import persist_run_intelligence
 from .models import Run
 from .steps import log_step
 
+from agents_tools.base import ToolResult
 from agents_tools.executor import invoke_tool
 from agents_llm.planner import plan_run
 from agents_llm.synthesizer import synthesize_run
@@ -322,6 +323,29 @@ def _should_replan(
     return verification_status in {"refuted", "inconclusive"}
 
 
+_REPLAN_LARGE_KEYS = {"items", "features", "results", "segments", "layers", "highlights", "pairs"}
+_REPLAN_SAMPLE_SIZE = 3
+
+
+def _truncate_output_for_replan(step: Dict[str, Any]) -> Dict[str, Any]:
+    """Elimina arrays masivos del output de un step para el contexto de replanificación."""
+    import copy
+    step = copy.deepcopy(step)
+    data = step.get("output", {}) or step.get("data", {})
+    if isinstance(data, dict):
+        for key in list(data.keys()):
+            if key in _REPLAN_LARGE_KEYS and isinstance(data[key], list):
+                original_len = len(data[key])
+                data[key] = data[key][:_REPLAN_SAMPLE_SIZE]
+                if original_len > _REPLAN_SAMPLE_SIZE:
+                    data[f"{key}_total"] = original_len
+    if "output" in step:
+        step["output"] = data
+    elif "data" in step:
+        step["data"] = data
+    return step
+
+
 def _build_replan_execution_context(
     *,
     payload: Dict[str, Any],
@@ -335,8 +359,8 @@ def _build_replan_execution_context(
         "map_context": payload.get("map_context") or {},
         "replan_count": replan_count,
         "previous_plan_steps": previous_plan.get("steps", []),
-        "executed_steps": executed_outputs,
-        "last_step": failed_step,
+        "executed_steps": [_truncate_output_for_replan(s) for s in executed_outputs],
+        "last_step": _truncate_output_for_replan(failed_step),
     }
 
 
@@ -442,9 +466,10 @@ def _execute_tool_step(
         if timeout_exceeded:
             if attempt < max_retries:
                 continue
-            last_tool_res.ok = False
-            last_tool_res.error = (
-                f"step timeout exceeded: {elapsed_ms / 1000.0:.3f}s > {float(timeout_s):.3f}s"
+            last_tool_res = ToolResult(
+                ok=False,
+                data=(last_tool_res.data if last_tool_res else {}),
+                error=f"step timeout exceeded: {elapsed_ms / 1000.0:.3f}s > {float(timeout_s):.3f}s",
             )
             break
 

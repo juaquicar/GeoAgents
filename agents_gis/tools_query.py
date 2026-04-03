@@ -10,7 +10,10 @@ from agents_gis.service import (
 @register_tool
 class SpatialQueryLayerTool(BaseTool):
     name = "spatial.query_layer"
-    description = "Consulta una capa concreta (AGENTS_GIS_LAYERS) dentro de un bbox con filtros allowlist."
+    description = (
+        "Consulta una capa concreta (AGENTS_GIS_LAYERS) con filtros de atributo y/o bbox espacial. "
+        "bbox es opcional: omítelo cuando busques por id o atributo sin restricción espacial."
+    )
     input_schema = {
         "type": "object",
         "properties": {
@@ -30,9 +33,9 @@ class SpatialQueryLayerTool(BaseTool):
             "random_sample": {"type": "boolean"},
             "include_geom": {"type": "boolean"},
             "simplify_meters": {"type": "number"},
-            "filters": {"type": "object"},  # { "field": value, ... } (solo igualdad)
+            "filters": {"type": "object"},  # { "field": scalar } o { "field": [v1, v2] } → IN
         },
-        "required": ["layer", "bbox"],
+        "required": ["layer"],
     }
 
     def invoke(self, *, args, run=None, user=None, **kwargs) -> ToolResult:
@@ -44,11 +47,14 @@ class SpatialQueryLayerTool(BaseTool):
         if not layer:
             return ToolResult(ok=False, error=f"Unknown layer: {layer_name}")
 
-        bbox = args["bbox"]
-        west = float(bbox["west"])
-        south = float(bbox["south"])
-        east = float(bbox["east"])
-        north = float(bbox["north"])
+        bbox = args.get("bbox")
+        if bbox:
+            west = float(bbox["west"])
+            south = float(bbox["south"])
+            east = float(bbox["east"])
+            north = float(bbox["north"])
+        else:
+            west = south = east = north = None
 
         limit = int(args.get("limit") or 50)
         limit = max(1, min(limit, 200))
@@ -70,29 +76,57 @@ class SpatialQueryLayerTool(BaseTool):
         id_col = layer.get("id_col", "id")
         fields = layer.get("fields", [])
         filter_fields = set(layer.get("filter_fields", []) or [])
+        filter_fields.add(id_col)  # el id_col siempre es filtrable
+
+        # Ignorar silenciosamente la key "fields": el LLM la usa para selección de columnas,
+        # no para filtrar — no es un campo de la tabla.
+        filters = {k: v for k, v in filters.items() if k != "fields"}
+
+        # Ignorar filtros con valores no soportados:
+        #   - None: campo opcional sin valor
+        #   - dict: expresión de rango {"gt": x} que no soportamos
+        #   - bool: causa errores de tipo en columnas numéricas (bigint = boolean)
+        filters = {
+            k: v for k, v in filters.items()
+            if v is not None and not isinstance(v, (dict, bool))
+        }
 
         # Validar que filters solo usa campos permitidos
         for k in filters.keys():
             if k not in filter_fields:
                 return ToolResult(ok=False, error=f"filter not allowed: {k}")
 
-        envelope_sql = bbox_in_layer_srid(srid)
-
         # WHERE base
         qgeom = quote_col(geom_col)
         geom4326 = geom_to_4326(qgeom, srid)
-        where_clauses = [
-            f"{qgeom} IS NOT NULL",
-            f"ST_Intersects({qgeom}, {envelope_sql})",
-        ]
-        params = [west, south, east, north]
+        where_clauses = [f"{qgeom} IS NOT NULL"]
+        params = []
 
-        # Filtros igualdad parametrizados (valores seguros)
+        if bbox:
+            envelope_sql = bbox_in_layer_srid(srid)
+            where_clauses.append(f"ST_Intersects({qgeom}, {envelope_sql})")
+            params.extend([west, south, east, north])
+
+        # Filtros parametrizados: escalar (=) o lista (IN)
         for k, v in filters.items():
-            if not isinstance(v, (str, int, float, bool)) and v is not None:
-                return ToolResult(ok=False, error=f"filter value for '{k}' must be a scalar")
-            where_clauses.append(f"{quote_col(k)} = %s")
-            params.append(v)
+            if isinstance(v, list):
+                if not v:
+                    continue  # lista vacía → no filtro
+                bad = [i for i in v if not isinstance(i, (str, int, float, bool)) and i is not None]
+                if bad:
+                    return ToolResult(ok=False, error=f"filter list values for '{k}' must be scalars")
+                # Normalizar a str: PostgreSQL puede hacer cast implícito str→número,
+                # pero NO número→varchar (operator does not exist).
+                norm_v = [str(i) if isinstance(i, (int, float)) and not isinstance(i, bool) else i for i in v]
+                placeholders = ", ".join(["%s"] * len(norm_v))
+                where_clauses.append(f"{quote_col(k)} IN ({placeholders})")
+                params.extend(norm_v)
+            else:
+                if not isinstance(v, (str, int, float, bool)) and v is not None:
+                    return ToolResult(ok=False, error=f"filter value for '{k}' must be a scalar")
+                norm_v = str(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
+                where_clauses.append(f"{quote_col(k)} = %s")
+                params.append(norm_v)
 
         where_sql = " AND ".join(where_clauses)
         order_sql = "ORDER BY random()" if random_sample else ""
@@ -184,7 +218,7 @@ class SpatialQueryLayerTool(BaseTool):
             ok=True,
             data={
                 "layer": layer_name,
-                "bbox": {"west": west, "south": south, "east": east, "north": north},
+                "bbox": {"west": west, "south": south, "east": east, "north": north} if bbox else None,
                 "filters": filters,
                 "limit": limit,
                 "offset": offset,

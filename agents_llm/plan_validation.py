@@ -1,5 +1,12 @@
 import json
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, List, Optional
+
+
+def _extract_step_refs_from_args(args: Any) -> List[str]:
+    """Extrae ids de steps referenciados via '$step:ID.xxx' en los args."""
+    text = json.dumps(args) if not isinstance(args, str) else args
+    return list({m for m in re.findall(r"\$step:([a-zA-Z0-9_\-]+)\.", text)})
 
 
 
@@ -77,11 +84,50 @@ def validate_plan(plan: dict) -> dict:
             step.pop("retry_backoff_s", None)
             step.pop("can_replan", None)
 
+    # Auto-rename ids duplicados: si el LLM genera dos steps con el mismo id, renombrar
+    # el duplicado (sufijo _b, _c, ...) en lugar de rechazar el plan.
     tool_step_ids = [s.get("id") for s in steps if s.get("type") == "tool"]
     if len(tool_step_ids) != len(set(tool_step_ids)):
-        raise ValueError("Planner tool steps must have unique id")
+        seen_ids: set = set()
+        for step in steps:
+            if step.get("type") != "tool":
+                continue
+            orig_id = step.get("id") or ""
+            if orig_id in seen_ids:
+                suffix_ord = ord("b")
+                new_id = orig_id + "_b"
+                while new_id in seen_ids:
+                    suffix_ord += 1
+                    new_id = orig_id + "_" + chr(suffix_ord)
+                step["id"] = new_id
+            seen_ids.add(step.get("id") or "")
 
-    seen_ids = set()
+    # Inferir depends_on implícitos desde referencias $step:ID en los args.
+    # El LLM a veces usa "$step:s1.data.items.0.lon" sin declarar depends_on: [s1].
+    all_ids_set = {s.get("id") for s in steps if s.get("type") == "tool"}
+    for step in steps:
+        if step.get("type") != "tool":
+            continue
+        inferred = _extract_step_refs_from_args(step.get("args") or {})
+        existing_deps = set(step.get("depends_on") or [])
+        new_deps = [ref for ref in inferred if ref in all_ids_set and ref not in existing_deps]
+        if new_deps:
+            step["depends_on"] = list(existing_deps) + new_deps
+
+    # Ordenar topológicamente los tool steps para tolerar planes donde el LLM
+    # generó los pasos en orden incorrecto pero con depends_on correcto.
+    plan["steps"] = _toposort_steps(steps)
+    steps = plan["steps"]
+
+    # Limpiar dependencias a steps desconocidos (el LLM a veces referencia ids que no existen)
+    all_tool_ids = {s.get("id") for s in steps if s.get("type") == "tool"}
+    for step in steps:
+        if step.get("type") == "tool":
+            valid_deps = [dep for dep in step.get("depends_on", []) if dep in all_tool_ids]
+            step["depends_on"] = valid_deps
+
+    # Verificar que no hay forward references después del toposort (indicaría ciclo)
+    seen_ids: set = set()
     for i, step in enumerate(steps):
         if step.get("type") != "tool":
             continue
@@ -89,7 +135,7 @@ def validate_plan(plan: dict) -> dict:
         for dep in step.get("depends_on", []):
             if dep not in seen_ids:
                 raise ValueError(
-                    f"Planner step {i} depends on unknown or future step id: {dep}"
+                    f"Planner step {i} depends on future step id after toposort: {dep} (ciclo detectado)"
                 )
         seen_ids.add(step_id)
 
@@ -98,6 +144,47 @@ def validate_plan(plan: dict) -> dict:
 
     return plan
 
+
+def _toposort_steps(steps: list) -> list:
+    """
+    Reordena los tool steps según sus depends_on usando Kahn's algorithm.
+    Los steps de tipo 'final' se preservan al final.
+    Si no hay dependencias forward, el orden original se mantiene.
+    """
+    tool_steps = [s for s in steps if s.get("type") == "tool"]
+    final_steps = [s for s in steps if s.get("type") != "tool"]
+
+    if not tool_steps:
+        return steps
+
+    # Grado de entrada y mapa de hijos
+    step_by_id = {s["id"]: s for s in tool_steps}
+    in_degree = {s["id"]: 0 for s in tool_steps}
+    children: dict[str, list[str]] = {s["id"]: [] for s in tool_steps}
+
+    for step in tool_steps:
+        for dep in step.get("depends_on", []):
+            if dep in in_degree:
+                in_degree[step["id"]] += 1
+                children[dep].append(step["id"])
+
+    # Inicializar cola con nodos sin dependencias (en orden original para estabilidad)
+    queue = [s["id"] for s in tool_steps if in_degree[s["id"]] == 0]
+    sorted_ids: list[str] = []
+
+    while queue:
+        node = queue.pop(0)
+        sorted_ids.append(node)
+        for child in children[node]:
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                queue.append(child)
+
+    if len(sorted_ids) != len(tool_steps):
+        # Hay un ciclo — devolver el orden original y dejar que la validación falle
+        return steps
+
+    return [step_by_id[sid] for sid in sorted_ids] + final_steps
 
 
 def _normalize_success_criteria(criteria: Any) -> Dict[str, Any]:

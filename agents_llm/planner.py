@@ -72,6 +72,19 @@ Reglas específicas por tool:
 - No uses "data.cost" para spatial.route_cost, porque esa tool devuelve "data.total_cost".
 - Para spatial.summary, evita usar data.count_total; usa preferentemente:
   {"path": "data.layers", "non_empty": true}
+- Para spatial.query_layer: los resultados están en "data.items" (NO en "data.features").
+  Cada item incluye siempre "lon" y "lat" con las coordenadas del centroide del elemento.
+  Para referenciar coordenadas de un item en un step posterior usa:
+    "$step:s1.data.items.0.lon"  y  "$step:s1.data.items.0.lat"
+  Para verificar que se encontraron resultados usa:
+    {"path": "data.items", "non_empty": true}
+  No uses campos de la tabla (como gps_lon, x, y) para obtener coordenadas; usa siempre lon/lat del item.
+  bbox es OPCIONAL en spatial.query_layer: omítelo cuando busques elementos por id o atributo
+  sin restricción espacial (por ejemplo, localizar un elemento concreto por su fid).
+  Solo incluye bbox cuando quieras limitar la búsqueda a una zona geográfica concreta.
+  Los valores de filters deben ser SIEMPRE escalares (string, number, boolean) o listas de escalares.
+  NUNCA uses objetos {"gt": ...}, {"gte": ...} etc. como valores de filtro — no están soportados.
+  Si quieres filtrar por rango, usa solo un valor escalar exacto o una lista de valores exactos.
 
 Uso de ejemplos:
 - Usa planning_examples como referencia de estilo y estructura.
@@ -115,7 +128,7 @@ def build_planner_user_prompt(
     agent_profile = getattr(run.agent, "profile", "compact")
 
     tools_catalog = export_tools_catalog(allowlist)
-    gis_layers_catalog = export_gis_layers_catalog()
+    gis_layers_catalog = export_gis_layers_catalog(compact_for_planner=True)
     filtered_examples = filter_planner_examples_by_allowlist(
         PLANNER_EXAMPLES + CANONICAL_PLANNER_EXAMPLES,
         allowlist,

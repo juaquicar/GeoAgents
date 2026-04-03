@@ -508,6 +508,29 @@ def build_verification_summary(step_outputs: List[Dict[str, Any]]) -> Dict[str, 
     return summary
 
 
+_LARGE_DATA_KEYS = {"items", "features", "results", "segments", "layers", "highlights", "pairs"}
+_STEP_SAMPLE_SIZE = 5  # items máximos por array en step_outputs enviados al LLM
+
+
+def _truncate_step_output(step: Dict[str, Any]) -> Dict[str, Any]:
+    """Elimina arrays masivos del output de una tool, conservando metadatos y muestra pequeña."""
+    import copy
+    step = copy.deepcopy(step)
+    data = step.get("data")
+    if not isinstance(data, dict):
+        return step
+
+    for key in list(data.keys()):
+        if key in _LARGE_DATA_KEYS and isinstance(data[key], list):
+            original_len = len(data[key])
+            data[key] = data[key][:_STEP_SAMPLE_SIZE]
+            if original_len > _STEP_SAMPLE_SIZE:
+                data[f"{key}_total"] = original_len
+                data[f"{key}_truncated"] = True
+    step["data"] = data
+    return step
+
+
 def build_synthesizer_user_prompt(
     *,
     goal: str,
@@ -535,7 +558,6 @@ def build_synthesizer_user_prompt(
         "tool_facts": tool_facts,
         "structured_facts": structured_facts,
         "verification_summary": verification_summary,
-        "step_outputs": step_outputs,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 

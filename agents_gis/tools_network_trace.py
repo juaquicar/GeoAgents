@@ -302,28 +302,45 @@ def _fetch_network_rows(layer: Dict[str, Any], args: Dict[str, Any], include_geo
     extra_cols = set(layer.get("fields") or [])
     has_segment_type = segment_type_field in extra_cols
 
+    # Determinar columna de nombre: "name" si existe, si no buscar *_name o usar NULL
+    name_col = None
+    if "name" in extra_cols:
+        name_col = "name"
+    else:
+        for f in (layer.get("fields") or []):
+            if f.endswith("_name") or f.startswith("name_"):
+                name_col = f
+                break
+
     qgeom = quote_col(geom_col)
     geom4326 = geom_to_4326(qgeom, srid)
     where_sql, where_params = _extract_bbox_clause(args, geom_col, srid)
-
-    geom_geojson_sql = ""
-    if include_geom:
-        geom_geojson_sql = f", ST_AsGeoJSON({geom4326}) AS geom_geojson"
 
     segment_type_sql = "NULL::text AS segment_type"
     if has_segment_type:
         segment_type_sql = f"{quote_col(segment_type_field)}::text AS segment_type"
 
+    name_sql = "NULL::text AS name" if name_col is None else f"{quote_col(name_col)}::text AS name"
+
+    # ST_Dump explota MULTILINESTRING en LINESTRING simples para que ST_StartPoint/ST_EndPoint
+    # funcionen correctamente. Para LINESTRING simple devuelve exactamente 1 fila por feature.
+    geom_dump_4326 = f"ST_Transform((ST_Dump({qgeom})).geom, 4326)" if srid != 4326 \
+        else f"(ST_Dump({qgeom})).geom"
+
+    geom_geojson_sql = ""
+    if include_geom:
+        geom_geojson_sql = f", ST_AsGeoJSON({geom_dump_4326}) AS geom_geojson"
+
     sql = f"""
         SELECT
             {quote_col(id_col)} AS id,
-            {quote_col('name')},
+            {name_sql},
             {segment_type_sql},
-            ST_X(ST_StartPoint({geom4326}))::float AS start_lon,
-            ST_Y(ST_StartPoint({geom4326}))::float AS start_lat,
-            ST_X(ST_EndPoint({geom4326}))::float AS end_lon,
-            ST_Y(ST_EndPoint({geom4326}))::float AS end_lat,
-            ST_Length({geom4326}::geography)::float AS length_m
+            ST_X(ST_StartPoint({geom_dump_4326}))::float AS start_lon,
+            ST_Y(ST_StartPoint({geom_dump_4326}))::float AS start_lat,
+            ST_X(ST_EndPoint({geom_dump_4326}))::float AS end_lon,
+            ST_Y(ST_EndPoint({geom_dump_4326}))::float AS end_lat,
+            ST_Length({geom_dump_4326}::geography)::float AS length_m
             {geom_geojson_sql}
         FROM {table}
         WHERE {where_sql}

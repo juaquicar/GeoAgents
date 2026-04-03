@@ -250,6 +250,13 @@ def infer_intersection_layers(
                 if target_layer and target_layer != source_layer:
                     break
 
+    # Fallback: si no se resolvió alguna capa, usar cualquier capa disponible distinta
+    all_layer_names = [layer.get("name") for layer in gis_layers_catalog if layer.get("name")]
+    if not source_layer and all_layer_names:
+        source_layer = all_layer_names[0]
+    if (not target_layer or target_layer == source_layer) and len(all_layer_names) >= 2:
+        target_layer = next((n for n in all_layer_names if n != source_layer), None)
+
     return {
         "source_layer": source_layer,
         "target_layer": target_layer,

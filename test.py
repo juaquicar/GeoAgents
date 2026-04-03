@@ -513,14 +513,14 @@ def print_case_result(result: dict) -> None:
 
 
 def summarize_results(results: list[dict]) -> None:
-    ok = [r for r in results if r["status"] == "done"]
+    ok = [r for r in results if r["status"] == "succeeded"]
     ko = [r for r in results if r["status"] != "done"]
 
     print("=" * 110)
     print(f"RESUMEN  — total={len(results)}  ok={len(ok)}  ko={len(ko)}")
     print("=" * 110)
     for r in results:
-        icon = "✔" if r["status"] == "done" else "✘"
+        icon = "✔" if r["status"] == "succeeded" else "✘"
         suite_tag = "[RED]" if r.get("network") else "[CAT]"
         print(
             f"  {icon} {suite_tag} [{r['profile']:<10}] {r['case_name']:<45} "

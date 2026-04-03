@@ -43,6 +43,17 @@ def normalize_plan(
         args = _inject_gis_inference(name, args, goal, gis_layers_catalog)
         args = _normalize_tool_args(name, args)
 
+        # Descartar steps con capas requeridas inválidas tras la inferencia
+        if name == "spatial.intersects":
+            valid_names = {l.get("name") for l in gis_layers_catalog}
+            if args.get("source_layer") not in valid_names or args.get("target_layer") not in valid_names:
+                continue
+        if name in {"spatial.query_layer", "spatial.nearby", "spatial.network_trace",
+                    "spatial.route_cost", "spatial.network_service_area"}:
+            valid_names = {l.get("name") for l in gis_layers_catalog}
+            if args.get("layer") is not None and args.get("layer") not in valid_names:
+                continue
+
         signature = _tool_signature(name, args)
         if signature in seen_tool_signatures:
             continue
@@ -89,13 +100,20 @@ def _inject_map_context(
     if tool_name in {
         "spatial.summary",
         "spatial.context_pack",
-        "spatial.query_layer",
         "spatial.intersects",
         "spatial.network_trace",
         "spatial.route_cost",
         "spatial.network_service_area",
     }:
         if "bbox" not in args and bbox:
+            args["bbox"] = bbox
+
+    if tool_name == "spatial.query_layer":
+        # Solo inyectar bbox si el plan no lo omitió intencionalmente.
+        # Si hay filtros de atributo y el plan no incluye bbox, respetamos esa decisión
+        # (típicamente búsquedas por id que no deben estar acotadas por zona).
+        has_filters = bool(args.get("filters"))
+        if "bbox" not in args and bbox and not has_filters:
             args["bbox"] = bbox
 
     if tool_name in {"spatial.summary", "spatial.context_pack"}:
@@ -521,6 +539,11 @@ def _apply_gis_goal_rules(
     if is_network_trace_goal and not is_route_cost_goal:
         inferred_layer = infer_network_layer(goal, gis_layers_catalog)
         valid_steps = [s for s in tool_steps if _step_has_required_network_trace_args(s)]
+        # También considerar steps de network_trace que existen pero sin puntos completos
+        partial_trace_steps = [
+            s for s in tool_steps
+            if s.get("name") == "spatial.network_trace" and s not in valid_steps
+        ]
         has_valid = len(valid_steps) > 0
 
         if has_valid:
@@ -542,6 +565,22 @@ def _apply_gis_goal_rules(
         end_point = trace_context.get("end_point") or _bbox_corner_end(bbox)
 
         if not (start_point and end_point):
+            return steps
+
+        # Si el LLM ya puso un step de network_trace (aunque incompleto), enriquecerlo
+        # en lugar de descartarlo — así preservamos el resto del plan (p.ej. nearby).
+        if partial_trace_steps:
+            steps = [
+                _enrich_existing_network_trace_step(s, bbox, trace_context, inferred_layer)
+                if s.get("type") == "tool" and s.get("name") == "spatial.network_trace"
+                else s
+                for s in steps
+            ]
+            if _goal_requests_general_context(goal) and not has_context_pack and bbox:
+                steps = _insert_before_final(
+                    steps,
+                    _build_context_pack_step(bbox, zoom, required=False, profile="rich"),
+                )
             return steps
 
         new_step = {
