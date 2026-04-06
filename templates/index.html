@@ -526,6 +526,9 @@
       <div class="px-6 py-3 border-b border-slate-700 bg-slate-800 flex items-center gap-4 shrink-0">
         <h2 class="text-base font-semibold">Mapa</h2>
         <span class="text-xs text-slate-400" x-text="`${mapFeatures.length} features`"></span>
+        <span class="text-xs font-mono px-2 py-0.5 rounded"
+              :class="mapZoom >= 18 ? 'bg-green-900 text-green-300' : 'bg-slate-700 text-slate-400'"
+              x-text="`z${mapZoom}`"></span>
         <div class="ml-auto flex gap-2">
           <button @click="clearMapFeatures()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1.5 rounded-lg">🗑️ Limpiar</button>
           <button @click="fitMapToFeatures()" x-show="mapFeatures.length > 0"
@@ -542,6 +545,58 @@
       </div>
       <div class="flex-1 relative">
         <div id="map" class="absolute inset-0"></div>
+
+        <!-- ── PANEL DE CAPAS BD ────────────────────────── -->
+        <div class="absolute bottom-6 left-2 z-[1000]" style="min-width:200px;max-width:260px;pointer-events:none">
+          <div style="pointer-events:auto">
+            <!-- Toggle button -->
+            <button @click="mapLayerPanelOpen = !mapLayerPanelOpen"
+              class="flex items-center gap-1.5 w-full bg-slate-800 bg-opacity-95 border border-slate-600 rounded-lg px-3 py-1.5 text-xs shadow-lg hover:bg-slate-700 transition-colors">
+              <span>🗂</span>
+              <span class="font-medium">Capas BD</span>
+              <span x-show="mapDbLayers.some(l => l.loading)" class="text-slate-400 animate-pulse">⟳</span>
+              <span class="ml-auto text-slate-400" x-text="mapLayerPanelOpen ? '▴' : '▾'"></span>
+            </button>
+            <!-- Panel -->
+            <div x-show="mapLayerPanelOpen" x-cloak
+              class="bg-slate-800 bg-opacity-95 border border-slate-600 rounded-lg shadow-xl mt-1 overflow-hidden"
+              style="max-height:55vh;overflow-y:auto">
+              <!-- Aviso zoom < 18 -->
+              <div x-show="mapZoom < 18"
+                class="px-3 py-2 text-xs text-amber-400 border-b border-slate-700 flex items-center gap-1.5">
+                <span>⚠</span>
+                <span>Zoom in hasta ≥ 18 para ver capas</span>
+              </div>
+              <!-- Lista de capas -->
+              <div x-show="mapZoom >= 18" class="divide-y divide-slate-700">
+                <template x-for="layer in mapDbLayers" :key="layer.name">
+                  <label class="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-700 cursor-pointer transition-colors">
+                    <!-- Indicador de color (leyenda) -->
+                    <span class="w-3 h-3 rounded-sm flex-shrink-0 border border-black border-opacity-20"
+                          :style="`background:${layer.color}`"></span>
+                    <!-- Nombre -->
+                    <span class="text-xs flex-1 truncate" x-text="layer.name"
+                          :class="layer.visible ? 'text-slate-200' : 'text-slate-500'"></span>
+                    <!-- Contador -->
+                    <span class="text-xs text-slate-500 flex-shrink-0">
+                      <span x-show="layer.loading" class="animate-pulse">…</span>
+                      <span x-show="!layer.loading && layer.count !== null"
+                            x-text="layer.total > layer.count ? `${layer.count}/${layer.total}` : layer.count"></span>
+                    </span>
+                    <!-- Toggle visibilidad -->
+                    <input type="checkbox" :checked="layer.visible"
+                           @change="toggleMapDbLayerVisibility(layer.name)"
+                           class="w-3.5 h-3.5 rounded cursor-pointer accent-indigo-500 flex-shrink-0">
+                  </label>
+                </template>
+                <!-- Estado vacío -->
+                <div x-show="mapDbLayers.length === 0"
+                  class="px-3 py-2 text-xs text-slate-500 text-center">Sin capas en el catálogo</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- ── FIN PANEL CAPAS ───────────────────────────── -->
       </div>
     </div>
 
@@ -710,6 +765,15 @@ function app() {
     // Standalone map
     mapInstance: null, mapLayer: null, mapFeatures: [],
     mapGeoJsonInput: '', mapError: '',
+    mapZoom: 13,
+    mapBbox: { west: -3.71, south: 40.41, east: -3.70, north: 40.42 },
+    // Capas BD en pestaña Mapa
+    mapDbLayers: [],          // [{name, color, visible, count, total, loading}]
+    mapLayerPanelOpen: true,
+    _mapDbColorIdx: 0,
+    _mapDbColorMap: {},
+    _mapDbLayerGroups: {},    // name -> L.LayerGroup
+    _mapDbFetchTimer: null,
 
     // Chat map
     chatMapInstance: null, chatMapLayer: null, chatMapFeatures: [],
@@ -1113,6 +1177,108 @@ function app() {
       this.mapInstance = L.map('map').setView([40.416, -3.703], 13);
       new BasemapSwitcherControl().addTo(this.mapInstance);
       this.mapLayer = L.featureGroup().addTo(this.mapInstance);
+
+      // Inicializar lista de capas desde el catálogo
+      this.mapDbLayers = this.layersList.map(l => ({
+        name: l.name, color: this.getMapDbColor(l.name),
+        visible: true, count: null, total: null, loading: false,
+      }));
+
+      // Trackear zoom y bbox; refrescar capas BD si zoom >= 18
+      const updateMapCtx = () => {
+        const b = this.mapInstance.getBounds();
+        this.mapZoom = this.mapInstance.getZoom();
+        this.mapBbox = {
+          west:  +b.getWest().toFixed(6),  south: +b.getSouth().toFixed(6),
+          east:  +b.getEast().toFixed(6),  north: +b.getNorth().toFixed(6),
+        };
+        this.scheduleMapDbRefresh();
+      };
+      this.mapInstance.on('moveend zoomend', updateMapCtx);
+    },
+
+    getMapDbColor(name) {
+      const PALETTE = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f97316','#84cc16'];
+      if (!this._mapDbColorMap[name]) {
+        this._mapDbColorMap[name] = PALETTE[this._mapDbColorIdx % PALETTE.length];
+        this._mapDbColorIdx++;
+      }
+      return this._mapDbColorMap[name];
+    },
+
+    scheduleMapDbRefresh() {
+      clearTimeout(this._mapDbFetchTimer);
+      if (this.mapZoom < 18) {
+        // Ocultar capas BD del mapa pero conservar el estado
+        for (const grp of Object.values(this._mapDbLayerGroups)) {
+          if (this.mapInstance && this.mapInstance.hasLayer(grp)) this.mapInstance.removeLayer(grp);
+        }
+        return;
+      }
+      this._mapDbFetchTimer = setTimeout(() => this.refreshMapDbLayers(), 400);
+    },
+
+    async refreshMapDbLayers() {
+      if (this.mapZoom < 18 || !this.mapInstance) return;
+      await Promise.all(
+        this.mapDbLayers.filter(l => l.visible).map(l => this.fetchMapDbLayerFeatures(l.name))
+      );
+    },
+
+    async fetchMapDbLayerFeatures(layerName) {
+      const entry = this.mapDbLayers.find(l => l.name === layerName);
+      if (!entry) return;
+      entry.loading = true;
+      const b = this.mapBbox;
+      const url = `/api/gis/features/?layer=${encodeURIComponent(layerName)}&west=${b.west}&south=${b.south}&east=${b.east}&north=${b.north}`;
+      try {
+        const r = await this.api('GET', url);
+        entry.loading = false;
+        if (!r.ok) return;
+        entry.count = r.data.count;
+        entry.total = r.data.total;
+
+        // Reemplazar grupo de capas
+        if (this._mapDbLayerGroups[layerName]) this.mapInstance.removeLayer(this._mapDbLayerGroups[layerName]);
+        if (!entry.visible) return;
+
+        const color = entry.color;
+        const grp = L.featureGroup();
+        for (const f of (r.data.features || [])) {
+          try {
+            L.geoJSON(f, {
+              style: { color, weight: 1.5, fillColor: color, fillOpacity: 0.25 },
+              pointToLayer: (_, ll) => L.circleMarker(ll, { radius: 5, color, fillColor: color, fillOpacity: 0.8, weight: 1 }),
+              onEachFeature: (ft, lyr) => {
+                const props = ft.properties || {};
+                const html = Object.entries(props)
+                  .filter(([k]) => !k.endsWith('_geojson') && !k.startsWith('_'))
+                  .slice(0, 12)
+                  .map(([k, v]) => `<b>${k}:</b> ${v ?? ''}`)
+                  .join('<br>');
+                if (html) lyr.bindPopup(`<div style="font-size:11px;max-height:180px;overflow:auto;max-width:220px"><b style="color:${color}">${layerName}</b><br>${html}</div>`);
+              },
+            }).addTo(grp);
+          } catch {}
+        }
+        grp.addTo(this.mapInstance);
+        this._mapDbLayerGroups[layerName] = grp;
+      } catch {
+        entry.loading = false;
+      }
+    },
+
+    toggleMapDbLayerVisibility(layerName) {
+      const entry = this.mapDbLayers.find(l => l.name === layerName);
+      if (!entry) return;
+      entry.visible = !entry.visible;
+      const grp = this._mapDbLayerGroups[layerName];
+      if (!this.mapInstance) return;
+      if (!entry.visible) {
+        if (grp && this.mapInstance.hasLayer(grp)) this.mapInstance.removeLayer(grp);
+      } else if (this.mapZoom >= 18) {
+        this.fetchMapDbLayerFeatures(layerName);
+      }
     },
     addGeoJsonToMap() {
       this.mapError = '';

@@ -213,6 +213,7 @@ else:
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GIS_MAP_LAYER_MAX_FEATURES = int(os.getenv("GIS_MAP_LAYER_MAX_FEATURES", "1000"))
 AGENTS_DEFAULT_LLM_MODEL = os.getenv(
     "AGENTS_DEFAULT_LLM_MODEL",
     "gpt-4o-mini"
