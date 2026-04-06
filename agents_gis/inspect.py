@@ -79,33 +79,20 @@ def _inspect_columns(cursor, schema: str, table: str) -> list:
     ]
 
 
-def get_or_register_agent_alias(agent_pk: int, conn_cfg: dict) -> str:
-    """
-    Registra la BD de un agente como alias Django (si no existe) y devuelve el alias.
-    El alias tiene formato: _agent_<pk>__<conn_alias>
-    """
-    alias = f"_agent_{agent_pk}__{conn_cfg.get('alias', 'default')}"
-    db_cfg = {
-        "ENGINE": "django.contrib.gis.db.backends.postgis",
-        "NAME": conn_cfg.get("db_name", ""),
-        "USER": conn_cfg.get("user", ""),
-        "PASSWORD": conn_cfg.get("password", "") or "",
-        "HOST": conn_cfg.get("host", ""),
-        "PORT": str(conn_cfg.get("port", 5432)),
-        "CONN_MAX_AGE": 0,
-        "ATOMIC_REQUESTS": False,
+def _psycopg2_connect(conn_cfg: dict):
+    """Abre una conexión psycopg2 directa (sin Django) a partir del dict de conexión."""
+    import psycopg2
+    params = {
+        "host":     conn_cfg.get("host", ""),
+        "port":     int(conn_cfg.get("port", 5432)),
+        "dbname":   conn_cfg.get("db_name", ""),
+        "user":     conn_cfg.get("user", ""),
+        "password": conn_cfg.get("password", "") or "",
     }
-    if conn_cfg.get("sslmode"):
-        db_cfg["OPTIONS"] = {"sslmode": conn_cfg["sslmode"]}
-
-    current_cfg = connections.databases.get(alias)
-    if current_cfg != db_cfg:
-        connections.databases[alias] = db_cfg
-        if current_cfg is not None:
-            # Si el alias ya existía con otra configuración, cerramos el wrapper
-            # para forzar reconexión con la nueva DSN.
-            connections[alias].close()
-    return alias
+    sslmode = (conn_cfg.get("sslmode") or "").strip()
+    if sslmode:
+        params["sslmode"] = sslmode
+    return psycopg2.connect(**params)
 
 
 def inspect_agent_gis(agent) -> list:
@@ -113,58 +100,55 @@ def inspect_agent_gis(agent) -> list:
     Inspecciona todas las conexiones GIS del agente y devuelve el catálogo de capas.
     Cada entrada incluye '_db_alias' indicando de qué conexión proviene.
 
+    Usa psycopg2 directamente para evitar problemas con el ConnectionHandler de Django.
     Lanza RuntimeError si alguna conexión falla.
     """
     catalog = []
     for conn_cfg in (agent.gis_db_connections or []):
-        alias = get_or_register_agent_alias(agent.pk, conn_cfg)
         schema = conn_cfg.get("schema", "public")
         conn_alias_name = conn_cfg.get("alias", "default")
 
-        close_old_connections()
-        conn = connections[alias]
         try:
-            conn.ensure_connection()
-        except Exception:
-            conn.close()
-            conn.ensure_connection()
-
-        try:
-            with conn.cursor() as cur:
-                tables = _inspect_tables(cur, schema)
+            raw_conn = _psycopg2_connect(conn_cfg)
         except Exception as exc:
             raise RuntimeError(
                 f"Error al conectar con '{conn_alias_name}' "
                 f"({conn_cfg.get('host')}:{conn_cfg.get('port')}/{conn_cfg.get('db_name')}): {exc}"
             ) from exc
 
-        for tbl in tables:
-            table_name = tbl["table_name"]
-            with conn.cursor() as cur:
-                cols = _inspect_columns(cur, schema, table_name)
+        try:
+            with raw_conn.cursor() as cur:
+                tables = _inspect_tables(cur, schema)
 
-            geom_col = tbl["geom_col"]
-            geom_type = tbl["geom_type"] or "GEOMETRY"
-            geometry_kind = _infer_geometry_kind(geom_type)
-            data_cols = [c["name"] for c in cols if c["name"] != geom_col]
-            id_col = _infer_id_col([c for c in cols if c["name"] != geom_col])
-            fields = [c for c in data_cols if c != id_col]
+            for tbl in tables:
+                table_name = tbl["table_name"]
+                with raw_conn.cursor() as cur:
+                    cols = _inspect_columns(cur, schema, table_name)
 
-            entry = {
-                "name": table_name,
-                "table": table_name,
-                "geom_col": geom_col,
-                "id_col": id_col,
-                "fields": fields,
-                "filter_fields": fields,
-                "geometry_kind": geometry_kind,
-                "srid": int(tbl["srid"]) if tbl.get("srid") else 4326,
-                "geom_type": geom_type,
-                "_db_alias": conn_alias_name,
-            }
-            if schema != "public":
-                entry["schema"] = schema
+                geom_col = tbl["geom_col"]
+                geom_type = tbl["geom_type"] or "GEOMETRY"
+                geometry_kind = _infer_geometry_kind(geom_type)
+                data_cols = [c["name"] for c in cols if c["name"] != geom_col]
+                id_col = _infer_id_col([c for c in cols if c["name"] != geom_col])
+                fields = [c for c in data_cols if c != id_col]
 
-            catalog.append(entry)
+                entry = {
+                    "name": table_name,
+                    "table": table_name,
+                    "geom_col": geom_col,
+                    "id_col": id_col,
+                    "fields": fields,
+                    "filter_fields": fields,
+                    "geometry_kind": geometry_kind,
+                    "srid": int(tbl["srid"]) if tbl.get("srid") else 4326,
+                    "geom_type": geom_type,
+                    "_db_alias": conn_alias_name,
+                }
+                if schema != "public":
+                    entry["schema"] = schema
+
+                catalog.append(entry)
+        finally:
+            raw_conn.close()
 
     return catalog

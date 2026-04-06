@@ -416,8 +416,9 @@
                 <label class="block text-sm text-slate-400 mb-1">Perfil</label>
                 <select x-model="agentForm.data.profile"
                   class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm">
+                  <option value="compact">compact</option>
+                  <option value="rich" selected>rich</option>
                   <option value="investigate">investigate</option>
-                  <option value="default">default</option>
                 </select>
               </div>
               <div class="flex items-end pb-1">

@@ -4,31 +4,58 @@ from django.db import connections, close_old_connections
 
 # ── Registro de aliases de agente ──────────────────────────────────────────
 
-def get_or_register_agent_alias(agent_pk: int, conn_cfg: dict) -> str:
+def _make_agent_db_cfg(conn_cfg: dict) -> dict:
     """
-    Registra la BD de un agente como alias Django (idempotente) y devuelve el alias.
-    Formato: _agent_<pk>__<conn_alias>
+    Construye el dict de configuración de BD con todos los defaults
+    que Django 6 espera (los inyecta via configure_settings solo al arrancar,
+    no al añadir aliases dinámicamente).
     """
-    alias = f"_agent_{agent_pk}__{conn_cfg.get('alias', 'default')}"
-    db_cfg = {
+    options = {}
+    if conn_cfg.get("sslmode"):
+        options["sslmode"] = conn_cfg["sslmode"]
+    return {
         "ENGINE": "django.contrib.gis.db.backends.postgis",
         "NAME": conn_cfg.get("db_name", ""),
         "USER": conn_cfg.get("user", ""),
         "PASSWORD": conn_cfg.get("password", "") or "",
         "HOST": conn_cfg.get("host", ""),
         "PORT": str(conn_cfg.get("port", 5432)),
-        "CONN_MAX_AGE": 0,
+        # Defaults que Django 6 no inyecta en aliases dinámicos
         "ATOMIC_REQUESTS": False,
+        "AUTOCOMMIT": True,
+        "CONN_MAX_AGE": 0,
+        "CONN_HEALTH_CHECKS": False,
+        "TIME_ZONE": None,
+        "OPTIONS": options,
+        "TEST": {
+            "CHARSET": None, "COLLATION": None,
+            "MIGRATE": True, "MIRROR": None, "NAME": None,
+        },
     }
-    if conn_cfg.get("sslmode"):
-        db_cfg["OPTIONS"] = {"sslmode": conn_cfg["sslmode"]}
+
+
+def get_or_register_agent_alias(agent_pk: int, conn_cfg: dict) -> str:
+    """
+    Registra la BD de un agente como alias Django (idempotente) y devuelve el alias.
+    Formato: _agent_<pk>__<conn_alias>
+    """
+    alias = f"_agent_{agent_pk}__{conn_cfg.get('alias', 'default')}"
+    db_cfg = _make_agent_db_cfg(conn_cfg)
 
     current_cfg = connections.databases.get(alias)
     if current_cfg != db_cfg:
         connections.databases[alias] = db_cfg
         if current_cfg is not None:
             # Forzar nueva conexión cuando cambian host/db/credenciales.
-            connections[alias].close()
+            try:
+                connections[alias].close()
+            except Exception:
+                pass
+        # Limpiar el wrapper cacheado para forzar recreación con la nueva config
+        try:
+            delattr(connections._connections, alias)
+        except AttributeError:
+            pass
     return alias
 
 
