@@ -12,10 +12,54 @@ from .serializers import (
 from .runner import execute_run
 
 
+def _run_inspect(agent):
+    """
+    Ejecuta la introspección GIS del agente y persiste el catálogo.
+    No lanza excepciones — los errores se devuelven como string en gis_layers_catalog.
+    """
+    from agents_gis.inspect import inspect_agent_gis
+    from django.utils import timezone
+    try:
+        catalog = inspect_agent_gis(agent)
+        agent.gis_layers_catalog = catalog
+        agent.gis_catalog_updated_at = timezone.now()
+        agent.save(update_fields=["gis_layers_catalog", "gis_catalog_updated_at"])
+        return None  # sin error
+    except Exception as exc:
+        return str(exc)
+
+
 class AgentViewSet(viewsets.ModelViewSet):
     queryset = Agent.objects.all().order_by("-id")
     serializer_class = AgentSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        agent = serializer.save()
+        if agent.gis_db_connections:
+            _run_inspect(agent)
+
+    def perform_update(self, serializer):
+        # Re-inspeccionar solo si el payload incluye gis_db_connections
+        agent = serializer.save()
+        if "gis_db_connections" in self.request.data and agent.gis_db_connections:
+            _run_inspect(agent)
+
+    @action(detail=True, methods=["post"])
+    def inspect(self, request, pk=None):
+        """POST /api/agents/{id}/inspect/ — Dispara la introspección GIS manualmente."""
+        agent = self.get_object()
+        if not agent.gis_db_connections:
+            return Response(
+                {"error": "El agente no tiene conexiones GIS configuradas."},
+                status=400,
+            )
+        error = _run_inspect(agent)
+        agent.refresh_from_db()
+        data = AgentSerializer(agent).data
+        if error:
+            data["inspect_error"] = error
+        return Response(data)
 
 
 class RunViewSet(viewsets.ModelViewSet):

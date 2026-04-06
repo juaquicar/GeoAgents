@@ -1,12 +1,26 @@
 from django.conf import settings
 
 # Máximo de campos a incluir en el catálogo enviado al planner.
-# Con capas de 70+ campos, el prompt puede superar los límites de contexto del LLM.
 _PLANNER_MAX_FIELDS = 25
 
 
-def export_gis_layers_catalog(*, compact_for_planner: bool = False):
-    layers = getattr(settings, "AGENTS_GIS_LAYERS", []) or []
+def export_gis_layers_catalog(*, compact_for_planner: bool = False, agent=None):
+    """
+    Devuelve el catálogo de capas GIS.
+
+    Prioridad:
+    1. `agent` pasado explícitamente.
+    2. Agente en contexto (si hay un run activo).
+    3. settings.AGENTS_GIS_LAYERS (fallback global).
+    """
+    if agent is None:
+        from agents_gis.context import get_current_agent
+        agent = get_current_agent()
+
+    if agent:
+        layers = list(agent.gis_layers_catalog or [])
+    else:
+        layers = list(getattr(settings, "AGENTS_GIS_LAYERS", []) or [])
 
     out = []
     for layer in layers:
@@ -14,9 +28,13 @@ def export_gis_layers_catalog(*, compact_for_planner: bool = False):
         filter_fields = layer.get("filter_fields", [])
 
         if compact_for_planner and len(fields) > _PLANNER_MAX_FIELDS:
-            fields = fields[:_PLANNER_MAX_FIELDS] + [f"...{len(layer.get('fields', [])) - _PLANNER_MAX_FIELDS}_more"]
+            fields = fields[:_PLANNER_MAX_FIELDS] + [
+                f"...{len(layer.get('fields', [])) - _PLANNER_MAX_FIELDS}_more"
+            ]
         if compact_for_planner and len(filter_fields) > _PLANNER_MAX_FIELDS:
-            filter_fields = filter_fields[:_PLANNER_MAX_FIELDS] + [f"...{len(layer.get('filter_fields', [])) - _PLANNER_MAX_FIELDS}_more"]
+            filter_fields = filter_fields[:_PLANNER_MAX_FIELDS] + [
+                f"...{len(layer.get('filter_fields', [])) - _PLANNER_MAX_FIELDS}_more"
+            ]
 
         out.append(
             {
@@ -26,8 +44,6 @@ def export_gis_layers_catalog(*, compact_for_planner: bool = False):
                 "id_col": layer.get("id_col", "id"),
                 "fields": fields,
                 "filter_fields": filter_fields,
-
-                # Metadatos geométricos explícitos
                 "geometry_kind": layer.get("geometry_kind"),
                 "geom_family": layer.get("geom_family"),
                 "geometry_type": layer.get("geometry_type"),
@@ -37,3 +53,8 @@ def export_gis_layers_catalog(*, compact_for_planner: bool = False):
             }
         )
     return out
+
+
+def export_gis_layers_catalog_for_agent(agent):
+    """Atajo para exportar el catálogo de un agente concreto (sin contexto)."""
+    return export_gis_layers_catalog(agent=agent)

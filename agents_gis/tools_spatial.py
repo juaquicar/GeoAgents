@@ -1,11 +1,9 @@
-from django.conf import settings
-
 from agents_tools.base import BaseTool, ToolResult
 from agents_tools.registry import register_tool
 
 from agents_gis.service import (
-    _fetchall_dict, get_gis_connection, qualified_table, quote_col,
-    get_layer_srid, geom_to_4326, bbox_in_layer_srid,
+    _fetchall_dict, get_gis_connection, get_agent_gis_layers,
+    qualified_table, quote_col, get_layer_srid, geom_to_4326, bbox_in_layer_srid,
 )
 
 @register_tool
@@ -51,9 +49,9 @@ class SpatialSummaryTool(BaseTool):
         simplify_meters = float(simplify_meters)
         simplify_meters = max(0.0, min(simplify_meters, 50.0))  # limit razonable
 
-        layers_cfg = getattr(settings, "AGENTS_GIS_LAYERS", [])
+        layers_cfg = get_agent_gis_layers()
         if not layers_cfg:
-            return ToolResult(ok=False, error="AGENTS_GIS_LAYERS is empty")
+            return ToolResult(ok=False, error="No hay capas GIS configuradas para este agente")
 
         # Filtrado por nombre (si el usuario lo pide)
         if requested_layers:

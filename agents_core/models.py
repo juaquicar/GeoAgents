@@ -4,8 +4,9 @@ from django.db import models
 
 class Agent(models.Model):
     """
-    Definición de un agente (MVP).
-    Más adelante: versionado, tool_allowlist, policies, etc.
+    Definición de un agente.
+    Cada agente puede tener sus propias conexiones a BBDDs GIS remotas
+    y un catálogo de capas auto-generado mediante introspección.
     """
     PROFILE_CHOICES = [
         ("compact", "Compact"),
@@ -23,6 +24,39 @@ class Agent(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     tool_allowlist = models.JSONField(default=list, blank=True)  # ["utils.ping","utils.now"]
+
+    # Conexiones GIS propias del agente.
+    # Formato de cada elemento:
+    # {
+    #   "alias": "main",          # nombre interno corto
+    #   "host": "...",
+    #   "port": 5432,
+    #   "db_name": "...",
+    #   "user": "...",
+    #   "password": "...",
+    #   "schema": "public",
+    #   "sslmode": "",            # opcional: "require", "disable", etc.
+    #   "is_default": true        # la conexión principal del agente
+    # }
+    gis_db_connections = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Conexiones a BBDDs GIS remotas de este agente.",
+    )
+
+    # Catálogo de capas GIS (auto-generado por introspección al guardar).
+    # Si está vacío, se usan las capas de settings.AGENTS_GIS_LAYERS como fallback.
+    gis_layers_catalog = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Catálogo de capas GIS. Se regenera automáticamente al guardar conexiones.",
+    )
+
+    gis_catalog_updated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Última vez que se ejecutó la introspección del catálogo.",
+    )
 
     def __str__(self):
         return self.name

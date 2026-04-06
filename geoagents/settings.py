@@ -95,6 +95,7 @@ DATABASES = {
         "PASSWORD": os.getenv("DB_PASSWORD", "geoagents"),
         "HOST": os.getenv("DB_HOST", "127.0.0.1"),
         "PORT": os.getenv("DB_PORT", "5433"),
+        "ATOMIC_REQUESTS": False,
     }
 }
 
@@ -109,6 +110,7 @@ if _gis_remote_host:
         "PASSWORD": os.getenv("GIS_REMOTE_DB_PASSWORD", ""),
         "HOST": _gis_remote_host,
         "PORT": os.getenv("GIS_REMOTE_DB_PORT", "5432"),
+        "ATOMIC_REQUESTS": False,
     }
     _gis_sslmode = os.getenv("GIS_REMOTE_DB_SSLMODE", "")
     if _gis_sslmode:

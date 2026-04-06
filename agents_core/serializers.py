@@ -79,6 +79,8 @@ def _normalize_verification_summary(summary, *, ensure_placeholder=False):
 
 
 class AgentSerializer(serializers.ModelSerializer):
+    gis_layers_count = serializers.SerializerMethodField()
+
     class Meta:
         model = Agent
         fields = [
@@ -89,8 +91,16 @@ class AgentSerializer(serializers.ModelSerializer):
             "tool_allowlist",
             "profile",
             "created_at",
+            # GIS connections & catalog
+            "gis_db_connections",
+            "gis_layers_catalog",
+            "gis_catalog_updated_at",
+            "gis_layers_count",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "created_at", "gis_layers_catalog", "gis_catalog_updated_at", "gis_layers_count"]
+
+    def get_gis_layers_count(self, obj):
+        return len(obj.gis_layers_catalog or [])
 
 
 class RunMemorySerializer(serializers.ModelSerializer):

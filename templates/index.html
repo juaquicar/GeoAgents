@@ -367,6 +367,12 @@
                 </div>
               </div>
               <p class="text-xs text-slate-400 mb-3 line-clamp-2" x-text="agent.system_prompt || '(sin prompt)'"></p>
+              <!-- Info GIS -->
+              <div x-show="(agent.gis_db_connections||[]).length > 0"
+                class="flex items-center gap-2 mb-2 text-xs text-emerald-400">
+                <span>🗄</span>
+                <span x-text="`${(agent.gis_db_connections||[]).length} BD · ${agent.gis_layers_count ?? 0} capas`"></span>
+              </div>
               <div class="text-xs text-slate-500 mb-1">Herramientas (<span x-text="(agent.tool_allowlist||[]).length"></span>):</div>
               <div class="flex flex-wrap">
                 <template x-for="t in (agent.tool_allowlist||[])" :key="t">
@@ -392,16 +398,19 @@
             <button @click="agentForm.open = false" class="text-slate-400 hover:text-white">✕</button>
           </div>
           <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <!-- Nombre -->
             <div>
               <label class="block text-sm text-slate-400 mb-1">Nombre *</label>
               <input x-model="agentForm.data.name" type="text"
                 class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
             </div>
+            <!-- System prompt -->
             <div>
               <label class="block text-sm text-slate-400 mb-1">System prompt</label>
               <textarea x-model="agentForm.data.system_prompt" rows="3"
                 class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500 resize-none"></textarea>
             </div>
+            <!-- Perfil + Activo -->
             <div class="grid grid-cols-2 gap-4">
               <div>
                 <label class="block text-sm text-slate-400 mb-1">Perfil</label>
@@ -418,12 +427,13 @@
                 </label>
               </div>
             </div>
+            <!-- Herramientas -->
             <div>
               <div class="flex items-center justify-between mb-2">
                 <label class="text-sm text-slate-400">Herramientas permitidas</label>
                 <button @click="selectAllTools()" class="text-xs text-indigo-400 hover:text-indigo-300">Todas</button>
               </div>
-              <div class="grid grid-cols-2 gap-1 max-h-48 overflow-y-auto bg-slate-900 rounded-lg p-3">
+              <div class="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto bg-slate-900 rounded-lg p-3">
                 <template x-for="t in allToolNames" :key="t">
                   <label class="flex items-center gap-2 cursor-pointer py-0.5">
                     <input type="checkbox" :value="t"
@@ -434,6 +444,123 @@
                 </template>
               </div>
             </div>
+
+            <!-- ── CONEXIONES GIS ─────────────────────────────── -->
+            <div class="border-t border-slate-700 pt-4">
+              <div class="flex items-center justify-between mb-3">
+                <label class="text-sm font-medium text-slate-300">🗄 Conexiones GIS</label>
+                <button @click="addGisConnection()"
+                  class="text-xs bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-1 rounded-lg">
+                  + Añadir BD
+                </button>
+              </div>
+              <div class="space-y-3">
+                <template x-for="(conn, idx) in (agentForm.data.gis_db_connections || [])" :key="idx">
+                  <div class="bg-slate-900 border border-slate-700 rounded-xl p-3 space-y-2">
+                    <div class="flex items-center justify-between">
+                      <span class="text-xs font-medium text-emerald-400" x-text="`Conexión ${idx + 1}${conn.is_default ? ' (principal)' : ''}`"></span>
+                      <div class="flex items-center gap-2">
+                        <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                          <input type="checkbox" :checked="conn.is_default"
+                            @change="setDefaultGisConnection(idx)"
+                            class="rounded accent-emerald-500" />
+                          principal
+                        </label>
+                        <button @click="removeGisConnection(idx)"
+                          class="text-red-400 hover:text-red-300 text-xs px-2 py-0.5 rounded hover:bg-slate-700">✕</button>
+                      </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-2">
+                      <div>
+                        <label class="block text-xs text-slate-500 mb-0.5">Alias *</label>
+                        <input x-model="conn.alias" placeholder="main"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div class="col-span-2">
+                        <label class="block text-xs text-slate-500 mb-0.5">Host *</label>
+                        <input x-model="conn.host" placeholder="servidor.example.com"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div>
+                        <label class="block text-xs text-slate-500 mb-0.5">Puerto</label>
+                        <input x-model.number="conn.port" type="number" placeholder="5432"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div>
+                        <label class="block text-xs text-slate-500 mb-0.5">Base de datos *</label>
+                        <input x-model="conn.db_name" placeholder="mi_bd_gis"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div>
+                        <label class="block text-xs text-slate-500 mb-0.5">Esquema</label>
+                        <input x-model="conn.schema" placeholder="public"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div>
+                        <label class="block text-xs text-slate-500 mb-0.5">Usuario *</label>
+                        <input x-model="conn.user" placeholder="postgres"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div>
+                        <label class="block text-xs text-slate-500 mb-0.5">Contraseña</label>
+                        <input x-model="conn.password" type="password"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div>
+                        <label class="block text-xs text-slate-500 mb-0.5">SSL mode</label>
+                        <select x-model="conn.sslmode"
+                          class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs">
+                          <option value="">sin SSL</option>
+                          <option value="require">require</option>
+                          <option value="disable">disable</option>
+                          <option value="prefer">prefer</option>
+                          <option value="verify-ca">verify-ca</option>
+                          <option value="verify-full">verify-full</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="!(agentForm.data.gis_db_connections||[]).length"
+                  class="text-xs text-slate-500 text-center py-3 border border-dashed border-slate-700 rounded-lg">
+                  Sin conexiones GIS — usa el fallback de settings
+                </div>
+              </div>
+            </div>
+
+            <!-- ── CATÁLOGO DE CAPAS ──────────────────────────── -->
+            <div x-show="agentForm.data.id" class="border-t border-slate-700 pt-4">
+              <div class="flex items-center justify-between mb-2">
+                <div>
+                  <span class="text-sm font-medium text-slate-300">📋 Catálogo de capas GIS</span>
+                  <span x-show="agentForm.data.gis_layers_count > 0"
+                    class="ml-2 text-xs bg-emerald-900 text-emerald-300 px-2 py-0.5 rounded-full"
+                    x-text="`${agentForm.data.gis_layers_count} capas`"></span>
+                  <div x-show="agentForm.data.gis_catalog_updated_at" class="text-xs text-slate-500 mt-0.5"
+                    x-text="`Actualizado: ${formatDate(agentForm.data.gis_catalog_updated_at)}`"></div>
+                </div>
+                <button @click="inspectAgentGis()" :disabled="agentForm.inspecting || !(agentForm.data.gis_db_connections||[]).length"
+                  class="text-xs px-3 py-1.5 rounded-lg font-medium transition-colors"
+                  :class="agentForm.inspecting ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 text-white'">
+                  <span x-show="!agentForm.inspecting">🔍 Inspeccionar</span>
+                  <span x-show="agentForm.inspecting" class="animate-pulse">Inspeccionando…</span>
+                </button>
+              </div>
+              <!-- Lista de capas -->
+              <div x-show="(agentForm.data.gis_layers_catalog||[]).length > 0"
+                class="max-h-32 overflow-y-auto bg-slate-900 rounded-lg p-2 space-y-0.5">
+                <template x-for="layer in (agentForm.data.gis_layers_catalog||[])" :key="layer.name">
+                  <div class="flex items-center gap-2 text-xs px-1 py-0.5 rounded hover:bg-slate-800">
+                    <span class="text-slate-500" x-text="layer.geometry_kind === 'line' ? '〰' : layer.geometry_kind === 'polygon' ? '▭' : '●'"></span>
+                    <span class="font-mono text-slate-300" x-text="layer.name"></span>
+                    <span class="text-slate-600 ml-auto" x-text="layer._db_alias ? `[${layer._db_alias}]` : ''"></span>
+                  </div>
+                </template>
+              </div>
+              <div x-show="agentForm.data.id && !(agentForm.data.gis_layers_catalog||[]).length && !(agentForm.data.gis_db_connections||[]).length"
+                class="text-xs text-slate-500">Sin conexiones configuradas, usa las capas globales del sistema.</div>
+            </div>
+
           </div>
           <div class="px-6 py-4 border-t border-slate-700 flex gap-3 shrink-0">
             <button @click="saveAgent()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2 rounded-lg">
@@ -523,8 +650,23 @@
 
     <!-- ── MAP (standalone) ──────────────────────────── -->
     <div x-show="page === 'map'" class="flex-1 flex flex-col overflow-hidden">
-      <div class="px-6 py-3 border-b border-slate-700 bg-slate-800 flex items-center gap-4 shrink-0">
-        <h2 class="text-base font-semibold">Mapa</h2>
+      <div class="px-6 py-3 border-b border-slate-700 bg-slate-800 flex items-center gap-3 shrink-0 flex-wrap">
+        <h2 class="text-base font-semibold shrink-0">Mapa</h2>
+
+        <!-- Selector de agente (BD y catálogo de capas) -->
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="text-xs text-slate-500">Agente:</span>
+          <select x-model="mapAgentId" @change="onMapAgentChange()"
+            class="bg-slate-700 border border-slate-600 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 max-w-[200px]">
+            <option value="">— BD global (settings) —</option>
+            <template x-for="a in agents.filter(a => a.is_active)" :key="a.id">
+              <option :value="a.id"
+                x-text="a.name + (a.gis_layers_count ? ` · ${a.gis_layers_count} capas` : '')">
+              </option>
+            </template>
+          </select>
+        </div>
+
         <span class="text-xs text-slate-400" x-text="`${mapFeatures.length} features`"></span>
         <span class="text-xs font-mono px-2 py-0.5 rounded"
               :class="mapZoom >= 18 ? 'bg-green-900 text-green-300' : 'bg-slate-700 text-slate-400'"
@@ -561,37 +703,44 @@
             <div x-show="mapLayerPanelOpen" x-cloak
               class="bg-slate-800 bg-opacity-95 border border-slate-600 rounded-lg shadow-xl mt-1 overflow-hidden"
               style="max-height:55vh;overflow-y:auto">
+              <!-- Agente activo -->
+              <div class="px-3 py-1.5 border-b border-slate-700 text-xs text-slate-500 truncate"
+                x-text="mapAgentId ? (agents.find(a=>a.id==mapAgentId)?.name || 'Agente') : 'BD global (settings)'">
+              </div>
+              <!-- Sin catálogo cuando hay agente sin capas -->
+              <div x-show="mapAgentId && mapDbLayers.length === 0"
+                class="px-3 py-2 text-xs text-amber-400 flex items-center gap-1.5">
+                <span>⚠</span><span>El agente no tiene catálogo. Usa "Inspeccionar" en la configuración.</span>
+              </div>
               <!-- Aviso zoom < 18 -->
-              <div x-show="mapZoom < 18"
+              <div x-show="mapZoom < 18 && (mapDbLayers.length > 0 || !mapAgentId)"
                 class="px-3 py-2 text-xs text-amber-400 border-b border-slate-700 flex items-center gap-1.5">
                 <span>⚠</span>
                 <span>Zoom in hasta ≥ 18 para ver capas</span>
               </div>
               <!-- Lista de capas -->
-              <div x-show="mapZoom >= 18" class="divide-y divide-slate-700">
+              <div x-show="mapZoom >= 18 && mapDbLayers.length > 0" class="divide-y divide-slate-700">
                 <template x-for="layer in mapDbLayers" :key="layer.name">
                   <label class="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-700 cursor-pointer transition-colors">
-                    <!-- Indicador de color (leyenda) -->
                     <span class="w-3 h-3 rounded-sm flex-shrink-0 border border-black border-opacity-20"
                           :style="`background:${layer.color}`"></span>
-                    <!-- Nombre -->
                     <span class="text-xs flex-1 truncate" x-text="layer.name"
                           :class="layer.visible ? 'text-slate-200' : 'text-slate-500'"></span>
-                    <!-- Contador -->
                     <span class="text-xs text-slate-500 flex-shrink-0">
                       <span x-show="layer.loading" class="animate-pulse">…</span>
                       <span x-show="!layer.loading && layer.count !== null"
                             x-text="layer.total > layer.count ? `${layer.count}/${layer.total}` : layer.count"></span>
                     </span>
-                    <!-- Toggle visibilidad -->
                     <input type="checkbox" :checked="layer.visible"
                            @change="toggleMapDbLayerVisibility(layer.name)"
                            class="w-3.5 h-3.5 rounded cursor-pointer accent-indigo-500 flex-shrink-0">
                   </label>
                 </template>
-                <!-- Estado vacío -->
-                <div x-show="mapDbLayers.length === 0"
-                  class="px-3 py-2 text-xs text-slate-500 text-center">Sin capas en el catálogo</div>
+              </div>
+              <!-- Sin agente y sin capas globales -->
+              <div x-show="!mapAgentId && mapDbLayers.length === 0"
+                class="px-3 py-2 text-xs text-slate-500 text-center">
+                Sin capas globales configuradas
               </div>
             </div>
           </div>
@@ -758,7 +907,7 @@ function app() {
 
     runs: { list: [], selected: null, trace: [], filter: '', loading: false },
     agents: [],
-    agentForm: { open: false, data: {} },
+    agentForm: { open: false, data: {}, inspecting: false },
     toolsList: [], toolSearch: '',
     layersList: [], layerSearch: '',
 
@@ -768,6 +917,7 @@ function app() {
     mapZoom: 13,
     mapBbox: { west: -3.71, south: 40.41, east: -3.70, north: 40.42 },
     // Capas BD en pestaña Mapa
+    mapAgentId: '',           // agente seleccionado para las capas BD del mapa
     mapDbLayers: [],          // [{name, color, visible, count, total, loading}]
     mapLayerPanelOpen: true,
     _mapDbColorIdx: 0,
@@ -1123,8 +1273,17 @@ function app() {
     },
     openAgentForm(agent) {
       this.agentForm.data = agent
-        ? {...agent, tool_allowlist: [...(agent.tool_allowlist||[])]}
-        : { name:'', system_prompt:'Eres un agente espacial analítico.', profile:'investigate', is_active:true, tool_allowlist:[] };
+        ? {
+            ...agent,
+            tool_allowlist: [...(agent.tool_allowlist||[])],
+            gis_db_connections: JSON.parse(JSON.stringify(agent.gis_db_connections || [])),
+          }
+        : {
+            name:'', system_prompt:'Eres un agente espacial analítico.',
+            profile:'investigate', is_active:true, tool_allowlist:[],
+            gis_db_connections:[],
+          };
+      this.agentForm.inspecting = false;
       this.agentForm.open = true;
     },
     get allToolNames() { return this.toolsList.map(t => t.name).sort(); },
@@ -1139,8 +1298,54 @@ function app() {
       const d = this.agentForm.data;
       if (!d.name) { this.showToast('El nombre es requerido','error'); return; }
       const r = await this.api(d.id?'PATCH':'POST', d.id?`/api/agents/${d.id}/`:'/api/agents/', d);
-      if (r.ok) { await this.loadAgents(); this.agentForm.open = false; this.showToast(d.id?'Agente actualizado':'Agente creado'); }
-      else this.showToast(`Error: ${JSON.stringify(r.data)}`,'error');
+      if (r.ok) {
+        // Actualizar el objeto en el formulario con los datos devueltos (incluye catálogo)
+        Object.assign(this.agentForm.data, r.data);
+        await this.loadAgents();
+        if (!d.id) this.agentForm.open = false;
+        this.showToast(d.id?'Agente actualizado':'Agente creado');
+        if (r.data.inspect_error) this.showToast(`Inspect: ${r.data.inspect_error}`, 'error');
+      } else {
+        this.showToast(`Error: ${JSON.stringify(r.data)}`,'error');
+      }
+    },
+
+    // ── GIS connections ──────────────────────────────────
+    addGisConnection() {
+      if (!this.agentForm.data.gis_db_connections) this.agentForm.data.gis_db_connections = [];
+      const isFirst = this.agentForm.data.gis_db_connections.length === 0;
+      this.agentForm.data.gis_db_connections.push({
+        alias: isFirst ? 'main' : `bd${this.agentForm.data.gis_db_connections.length + 1}`,
+        host: '', port: 5432, db_name: '', user: '', password: '',
+        schema: 'public', sslmode: '', is_default: isFirst,
+      });
+    },
+    removeGisConnection(idx) {
+      const conns = this.agentForm.data.gis_db_connections;
+      const wasDefault = conns[idx]?.is_default;
+      conns.splice(idx, 1);
+      if (wasDefault && conns.length > 0) conns[0].is_default = true;
+    },
+    setDefaultGisConnection(idx) {
+      const conns = this.agentForm.data.gis_db_connections || [];
+      conns.forEach((c, i) => { c.is_default = (i === idx); });
+    },
+    async inspectAgentGis() {
+      const id = this.agentForm.data.id;
+      if (!id) { this.showToast('Guarda el agente primero','error'); return; }
+      this.agentForm.inspecting = true;
+      try {
+        const r = await this.api('POST', `/api/agents/${id}/inspect/`);
+        if (r.ok) {
+          Object.assign(this.agentForm.data, r.data);
+          await this.loadAgents();
+          this.showToast(`Catálogo actualizado: ${r.data.gis_layers_count} capas`);
+        } else {
+          this.showToast(r.data?.error || 'Error al inspeccionar', 'error');
+        }
+      } finally {
+        this.agentForm.inspecting = false;
+      }
     },
     async deleteAgent(agent) {
       if (!confirm(`¿Eliminar agente "${agent.name}"?`)) return;
@@ -1178,11 +1383,8 @@ function app() {
       new BasemapSwitcherControl().addTo(this.mapInstance);
       this.mapLayer = L.featureGroup().addTo(this.mapInstance);
 
-      // Inicializar lista de capas desde el catálogo
-      this.mapDbLayers = this.layersList.map(l => ({
-        name: l.name, color: this.getMapDbColor(l.name),
-        visible: true, count: null, total: null, loading: false,
-      }));
+      // Cargar capas según el agente seleccionado (o fallback global)
+      this.onMapAgentChange();
 
       // Trackear zoom y bbox; refrescar capas BD si zoom >= 18
       const updateMapCtx = () => {
@@ -1195,6 +1397,32 @@ function app() {
         this.scheduleMapDbRefresh();
       };
       this.mapInstance.on('moveend zoomend', updateMapCtx);
+    },
+
+    onMapAgentChange() {
+      // Limpiar capas BD actuales del mapa y resetear estado de colores
+      for (const grp of Object.values(this._mapDbLayerGroups)) {
+        if (this.mapInstance && this.mapInstance.hasLayer(grp)) this.mapInstance.removeLayer(grp);
+      }
+      this._mapDbLayerGroups = {};
+      this._mapDbColorIdx = 0;
+      this._mapDbColorMap = {};
+
+      // Obtener el catálogo: del agente seleccionado o fallback global (layersList)
+      let catalog = [];
+      if (this.mapAgentId) {
+        const agent = this.agents.find(a => a.id == this.mapAgentId);
+        catalog = agent ? (agent.gis_layers_catalog || []) : [];
+      } else {
+        catalog = this.layersList;  // fallback: catálogo global de settings
+      }
+
+      this.mapDbLayers = catalog.map(l => ({
+        name: l.name, color: this.getMapDbColor(l.name),
+        visible: true, count: null, total: null, loading: false,
+      }));
+
+      if (this.mapZoom >= 18 && this.mapInstance) this.scheduleMapDbRefresh();
     },
 
     getMapDbColor(name) {
@@ -1230,7 +1458,8 @@ function app() {
       if (!entry) return;
       entry.loading = true;
       const b = this.mapBbox;
-      const url = `/api/gis/features/?layer=${encodeURIComponent(layerName)}&west=${b.west}&south=${b.south}&east=${b.east}&north=${b.north}`;
+      const agentParam = this.mapAgentId ? `&agent_id=${this.mapAgentId}` : '';
+      const url = `/api/gis/features/?layer=${encodeURIComponent(layerName)}&west=${b.west}&south=${b.south}&east=${b.east}&north=${b.north}${agentParam}`;
       try {
         const r = await this.api('GET', url);
         entry.loading = false;

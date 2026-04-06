@@ -527,6 +527,11 @@ def _append_plan_history(plan_history: List[Dict[str, Any]], plan: Dict[str, Any
 
 
 def execute_run(run: Run) -> Run:
+    # Inyectar el agente en el contexto GIS para que todas las tools
+    # usen sus conexiones y catálogo de capas propios.
+    from agents_gis.context import set_agent_context, _current_agent
+    _ctx_token = set_agent_context(run.agent)
+
     run.status = "running"
     run.started_at = timezone.now()
     run.save(update_fields=["status", "started_at"])
@@ -806,3 +811,6 @@ def execute_run(run: Run) -> Run:
             error=str(e),
         )
         return run
+    finally:
+        # Restaurar el contexto GIS anterior (seguro en entornos concurrentes)
+        _current_agent.reset(_ctx_token)
