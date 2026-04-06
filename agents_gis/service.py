@@ -19,6 +19,7 @@ def get_or_register_agent_alias(agent_pk: int, conn_cfg: dict) -> str:
             "HOST": conn_cfg.get("host", ""),
             "PORT": str(conn_cfg.get("port", 5432)),
             "CONN_MAX_AGE": 0,
+            "ATOMIC_REQUESTS": False,
         }
         if conn_cfg.get("sslmode"):
             db_cfg["OPTIONS"] = {"sslmode": conn_cfg["sslmode"]}
