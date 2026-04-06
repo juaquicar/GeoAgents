@@ -616,12 +616,37 @@
 
     <!-- ── LAYERS ─────────────────────────────────────── -->
     <div x-show="page === 'layers'" class="flex-1 flex flex-col overflow-hidden">
-      <div class="px-6 py-4 border-b border-slate-700 bg-slate-800">
-        <h2 class="text-base font-semibold mb-2">Catálogo de capas GIS</h2>
+      <div class="px-6 py-4 border-b border-slate-700 bg-slate-800 space-y-2">
+        <div class="flex items-center gap-3 flex-wrap">
+          <h2 class="text-base font-semibold shrink-0">Catálogo de capas GIS</h2>
+          <!-- Selector de agente -->
+          <select x-model="layersAgentId"
+            class="bg-slate-700 border border-slate-600 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 max-w-[220px]">
+            <option value="" x-show="hasGlobalGis">— BD global (settings) —</option>
+            <option value="" x-show="!hasGlobalGis" disabled>— Selecciona agente —</option>
+            <template x-for="a in agents.filter(a => (a.gis_layers_catalog||[]).length > 0)" :key="a.id">
+              <option :value="a.id"
+                x-text="a.name + ` · ${(a.gis_layers_catalog||[]).length} capas`">
+              </option>
+            </template>
+          </select>
+          <span class="text-xs text-slate-500" x-text="`${activeLayersCatalog.length} capas`"></span>
+        </div>
         <input x-model="layerSearch" placeholder="Buscar capa…"
           class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
       </div>
-      <div class="flex-1 overflow-y-auto p-6">
+      <!-- Sin catálogo disponible -->
+      <div x-show="activeLayersCatalog.length === 0 && !layerSearch"
+        class="flex flex-col items-center justify-center flex-1 text-slate-500 gap-2">
+        <div class="text-4xl">🗺️</div>
+        <p class="text-sm" x-show="!layersAgentId && !hasGlobalGis">
+          No hay BD global configurada. Selecciona un agente con catálogo.
+        </p>
+        <p class="text-sm" x-show="layersAgentId">
+          El agente no tiene catálogo. Usa "Inspeccionar" en su configuración.
+        </p>
+      </div>
+      <div class="flex-1 overflow-y-auto p-6" x-show="activeLayersCatalog.length > 0 || layerSearch">
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           <template x-for="layer in filteredLayers" :key="layer.name">
             <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 hover:border-slate-600 transition-colors">
@@ -659,10 +684,11 @@
           <span class="text-xs text-slate-500">Agente:</span>
           <select x-model="mapAgentId" @change="onMapAgentChange()"
             class="bg-slate-700 border border-slate-600 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 max-w-[200px]">
-            <option value="">— BD global (settings) —</option>
-            <template x-for="a in agents.filter(a => a.is_active)" :key="a.id">
+            <option value="" x-show="hasGlobalGis">— BD global (settings) —</option>
+            <option value="" x-show="!hasGlobalGis" disabled>— Selecciona agente —</option>
+            <template x-for="a in agents.filter(a => a.is_active && (a.gis_layers_count || 0) > 0)" :key="a.id">
               <option :value="a.id"
-                x-text="a.name + (a.gis_layers_count ? ` · ${a.gis_layers_count} capas` : '')">
+                x-text="a.name + ` · ${a.gis_layers_count} capas`">
               </option>
             </template>
           </select>
@@ -704,9 +730,14 @@
             <div x-show="mapLayerPanelOpen" x-cloak
               class="bg-slate-800 bg-opacity-95 border border-slate-600 rounded-lg shadow-xl mt-1 overflow-hidden"
               style="max-height:55vh;overflow-y:auto">
-              <!-- Agente activo -->
+              <!-- Agente activo / fuente de capas -->
               <div class="px-3 py-1.5 border-b border-slate-700 text-xs text-slate-500 truncate"
-                x-text="mapAgentId ? (agents.find(a=>a.id==mapAgentId)?.name || 'Agente') : 'BD global (settings)'">
+                x-text="mapAgentId ? (agents.find(a=>a.id==mapAgentId)?.name || 'Agente') : (hasGlobalGis ? 'BD global (settings)' : 'Sin fuente configurada')">
+              </div>
+              <!-- Sin BD global ni agente seleccionado -->
+              <div x-show="!mapAgentId && !hasGlobalGis"
+                class="px-3 py-2 text-xs text-amber-400 flex items-center gap-1.5">
+                <span>⚠</span><span>Selecciona un agente con catálogo de capas.</span>
               </div>
               <!-- Sin catálogo cuando hay agente sin capas -->
               <div x-show="mapAgentId && mapDbLayers.length === 0"
@@ -714,7 +745,7 @@
                 <span>⚠</span><span>El agente no tiene catálogo. Usa "Inspeccionar" en la configuración.</span>
               </div>
               <!-- Aviso zoom < 18 -->
-              <div x-show="mapZoom < 18 && (mapDbLayers.length > 0 || !mapAgentId)"
+              <div x-show="mapZoom < 18 && mapDbLayers.length > 0"
                 class="px-3 py-2 text-xs text-amber-400 border-b border-slate-700 flex items-center gap-1.5">
                 <span>⚠</span>
                 <span>Zoom in hasta ≥ 18 para ver capas</span>
@@ -737,11 +768,6 @@
                            class="w-3.5 h-3.5 rounded cursor-pointer accent-indigo-500 flex-shrink-0">
                   </label>
                 </template>
-              </div>
-              <!-- Sin agente y sin capas globales -->
-              <div x-show="!mapAgentId && mapDbLayers.length === 0"
-                class="px-3 py-2 text-xs text-slate-500 text-center">
-                Sin capas globales configuradas
               </div>
             </div>
           </div>
@@ -910,7 +936,8 @@ function app() {
     agents: [],
     agentForm: { open: false, data: {}, inspecting: false },
     toolsList: [], toolSearch: '',
-    layersList: [], layerSearch: '',
+    layersList: [], layerSearch: '', layersAgentId: '',
+    hasGlobalGis: false,
 
     // Standalone map
     mapInstance: null, mapLayer: null, mapFeatures: [],
@@ -1369,12 +1396,22 @@ function app() {
     // ── LAYERS ───────────────────────────────────────────
     async loadLayers() {
       const r = await this.api('GET', '/api/gis/layers/');
-      if (r.ok) this.layersList = r.data || [];
+      if (r.ok) {
+        this.layersList = r.data || [];
+        this.hasGlobalGis = this.layersList.length > 0;
+      }
+    },
+    get activeLayersCatalog() {
+      if (this.layersAgentId) {
+        const agent = this.agents.find(a => a.id == this.layersAgentId);
+        return agent ? (agent.gis_layers_catalog || []) : [];
+      }
+      return this.hasGlobalGis ? this.layersList : [];
     },
     get filteredLayers() {
       const q = this.layerSearch.toLowerCase();
-      if (!q) return this.layersList;
-      return this.layersList.filter(l => l.name.toLowerCase().includes(q)||(l.table||'').toLowerCase().includes(q));
+      if (!q) return this.activeLayersCatalog;
+      return this.activeLayersCatalog.filter(l => l.name.toLowerCase().includes(q)||(l.table||'').toLowerCase().includes(q));
     },
 
     // ── MAP (standalone) ─────────────────────────────────
@@ -1409,12 +1446,12 @@ function app() {
       this._mapDbColorIdx = 0;
       this._mapDbColorMap = {};
 
-      // Obtener el catálogo: del agente seleccionado o fallback global (layersList)
+      // Obtener el catálogo: del agente seleccionado, o global si está configurado
       let catalog = [];
       if (this.mapAgentId) {
         const agent = this.agents.find(a => a.id == this.mapAgentId);
         catalog = agent ? (agent.gis_layers_catalog || []) : [];
-      } else {
+      } else if (this.hasGlobalGis) {
         catalog = this.layersList;  // fallback: catálogo global de settings
       }
 

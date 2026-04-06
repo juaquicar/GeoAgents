@@ -17,6 +17,9 @@ class GisLayerListAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        # Si no hay BD global configurada, devolver lista vacía
+        if not getattr(settings, "AGENTS_GIS_DB_ALIAS", ""):
+            return Response([])
         layers = export_gis_layers_catalog()
         serializer = GisLayerIntrospectionSerializer(layers, many=True)
         return Response(serializer.data)
