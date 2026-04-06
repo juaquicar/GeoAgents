@@ -85,20 +85,26 @@ def get_or_register_agent_alias(agent_pk: int, conn_cfg: dict) -> str:
     El alias tiene formato: _agent_<pk>__<conn_alias>
     """
     alias = f"_agent_{agent_pk}__{conn_cfg.get('alias', 'default')}"
-    if alias not in connections.databases:
-        db_cfg = {
-            "ENGINE": "django.contrib.gis.db.backends.postgis",
-            "NAME": conn_cfg.get("db_name", ""),
-            "USER": conn_cfg.get("user", ""),
-            "PASSWORD": conn_cfg.get("password", "") or "",
-            "HOST": conn_cfg.get("host", ""),
-            "PORT": str(conn_cfg.get("port", 5432)),
-            "CONN_MAX_AGE": 0,
-            "ATOMIC_REQUESTS": False,
-        }
-        if conn_cfg.get("sslmode"):
-            db_cfg["OPTIONS"] = {"sslmode": conn_cfg["sslmode"]}
+    db_cfg = {
+        "ENGINE": "django.contrib.gis.db.backends.postgis",
+        "NAME": conn_cfg.get("db_name", ""),
+        "USER": conn_cfg.get("user", ""),
+        "PASSWORD": conn_cfg.get("password", "") or "",
+        "HOST": conn_cfg.get("host", ""),
+        "PORT": str(conn_cfg.get("port", 5432)),
+        "CONN_MAX_AGE": 0,
+        "ATOMIC_REQUESTS": False,
+    }
+    if conn_cfg.get("sslmode"):
+        db_cfg["OPTIONS"] = {"sslmode": conn_cfg["sslmode"]}
+
+    current_cfg = connections.databases.get(alias)
+    if current_cfg != db_cfg:
         connections.databases[alias] = db_cfg
+        if current_cfg is not None:
+            # Si el alias ya existía con otra configuración, cerramos el wrapper
+            # para forzar reconexión con la nueva DSN.
+            connections[alias].close()
     return alias
 
 
