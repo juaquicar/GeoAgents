@@ -2,13 +2,15 @@ from typing import Sequence
 
 
 TOOL_ANALYSIS_TYPES = {
+    "spatial.aggregate": "statistical_aggregation",
+    "spatial.buffer": "proximity_analysis",
     "spatial.context_pack": "spatial_context",
     "spatial.intersects": "spatial_relation",
     "spatial.nearby": "proximity_analysis",
-    "spatial.network_trace": "network_trace",
     "spatial.network_service_area": "network_service_area",
-    "spatial.route_cost": "network_route_cost",
+    "spatial.network_trace": "network_trace",
     "spatial.query_layer": "layer_query",
+    "spatial.route_cost": "network_route_cost",
     "spatial.summary": "spatial_summary",
 }
 

@@ -139,6 +139,7 @@ Campos relevantes:
 * `agent`
 * `agent_name`
 * `user`
+* `session_id` — identificador de sesión conversacional (opcional). Runs con el mismo `session_id` forman un hilo multi-turno; el planner recibe historial condensado de turnos anteriores.
 * `status`
 * `input_json`
 * `output_json`
@@ -271,6 +272,7 @@ POST /api/agents/runs/
 ```json
 {
   "agent": 1,
+  "session_id": "sesion-abc123",
   "input_json": {
     "goal": "Comprueba si existe una ruta de red válida entre dos puntos",
     "map_context": {
@@ -296,6 +298,17 @@ POST /api/agents/runs/
 }
 ```
 
+El campo `session_id` es opcional. Si se omite, el run es independiente (sin historial de sesión). Si se incluye, el planner recibirá un resumen condensado de los últimos runs de la misma sesión como contexto adicional.
+
+```json
+{
+  "agent": 1,
+  "input_json": {
+    "goal": "Comprueba si existe una ruta de red válida entre dos puntos"
+  }
+}
+```
+
 ### Response
 
 ```json
@@ -304,6 +317,7 @@ POST /api/agents/runs/
   "agent": 1,
   "agent_name": "geo-agent",
   "user": 7,
+  "session_id": "sesion-abc123",
   "status": "queued",
   "input_json": {
     "goal": "Comprueba si existe una ruta de red válida entre dos puntos",
@@ -1136,6 +1150,80 @@ Incluye:
 
 ---
 
+# Sesiones multi-turno
+
+GeoAgents soporta conversaciones multi-turno mediante el campo `session_id` en el Run. Cuando varios runs comparten el mismo `session_id`, el planner recibe automáticamente un resumen condensado de los últimos turnos de la sesión como contexto adicional.
+
+## Cómo funciona
+
+1. El cliente genera o reutiliza un `session_id` (cualquier string hasta 64 caracteres).
+2. Cada run se crea con ese `session_id`.
+3. Al planificar, el runner recupera los últimos runs `succeeded` con ese `session_id` (hasta 5, los más recientes) y los resume en un `session_context`.
+4. El planner puede referenciar el contexto previo para evitar repetir análisis, refinar resultados anteriores o contextualizar la nueva consulta.
+
+## Ejemplo: conversación de dos turnos
+
+**Turno 1** — exploración general:
+
+```json
+POST /api/agents/runs/
+{
+  "agent": 1,
+  "session_id": "conv-usuario-42",
+  "input_json": {
+    "goal": "¿Qué elementos hay en esta zona?",
+    "map_context": {
+      "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33},
+      "zoom": 18
+    }
+  }
+}
+```
+
+Tras ejecutar, `final_text` devuelve algo como:
+> "En la zona se detectaron 3 puntos de tipo A y 1 polígono de tipo B."
+
+**Turno 2** — pregunta de seguimiento en la misma sesión:
+
+```json
+POST /api/agents/runs/
+{
+  "agent": 1,
+  "session_id": "conv-usuario-42",
+  "input_json": {
+    "goal": "¿Los puntos de tipo A intersectan con el polígono detectado antes?",
+    "map_context": {
+      "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33},
+      "zoom": 18
+    }
+  }
+}
+```
+
+El planner recibe en su prompt el historial condensado del turno 1:
+
+```json
+"session_context": [
+  {
+    "run_id": 10,
+    "goal": "¿Qué elementos hay en esta zona?",
+    "final_text": "En la zona se detectaron 3 puntos de tipo A y 1 polígono de tipo B.",
+    "tools_used": ["spatial.query_layer", "spatial.context_pack"]
+  }
+]
+```
+
+Con esa información, el planner puede interpretar "los puntos de tipo A" y "el polígono detectado antes" sin necesidad de contexto adicional del cliente.
+
+## Notas
+
+* Un run sin `session_id` se trata como una consulta independiente.
+* El historial se limita a los últimos 5 runs con `status = succeeded` del mismo agente y misma sesión.
+* El resumen de `final_text` se trunca a 500 caracteres por turno para no saturar el prompt.
+* El `session_id` no tiene semántica interna para el servidor: es un identificador opaco definido por el cliente.
+
+---
+
 # Modelo de entrada habitual
 
 La API no impone un shape único más allá de `input_json`, pero el caso típico es:
@@ -1336,6 +1424,7 @@ const createRes = await fetch("/api/agents/runs/", {
   },
   body: JSON.stringify({
     agent: 1,
+    session_id: "conv-usuario-42",   // opcional, para conversaciones multi-turno
     input_json: {
       goal: "Traza una ruta por la red",
       map_context: {
@@ -1390,6 +1479,7 @@ create_resp = requests.post(
     headers=headers,
     json={
         "agent": 1,
+        "session_id": "conv-usuario-42",   # opcional, para conversaciones multi-turno
         "input_json": {
             "goal": "Traza una ruta por la red",
             "map_context": {
@@ -1429,6 +1519,7 @@ print(trace_resp.json())
 * enviar `map_context.bbox` cuando el análisis sea espacial
 * enviar `zoom` si está disponible
 * para trazados de red, enviar también `trace_context.start_point` y `trace_context.end_point`
+* usar `session_id` para agrupar runs relacionados en una conversación multi-turno; el planner recibirá historial automático
 * no asumir que crear un run implica ejecutarlo
 * usar `trace` para debugging y observabilidad
 * usar `steps` cuando se quiera inspeccionar el log persistido
@@ -1474,4 +1565,5 @@ La API de GeoAgents no solo expone agentes y ejecuciones, sino también memoria 
 * verificar hipótesis con trazabilidad
 * recuperar ejecuciones pasadas por criterios semánticos
 * analizar estrategias exitosas y fallidas
+* mantener conversaciones multi-turno con contexto acumulado mediante `session_id`
 * construir observabilidad real sobre agentes GIS y no GIS

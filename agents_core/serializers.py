@@ -195,6 +195,7 @@ class RunSerializer(serializers.ModelSerializer):
             "agent",
             "agent_name",
             "user",
+            "session_id",
             "status",
             "input_json",
             "output_json",

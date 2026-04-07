@@ -6,10 +6,10 @@ Se ejecutan con el test runner de Django (`python manage.py test`).
 ---
 
 ## Requisitos previos
-
 ```bash
 # BD local de test activa (Docker)
 docker compose up -d
+
 
 # Variables de entorno cargadas
 # (el .env se carga automáticamente al arrancar Django)
@@ -44,13 +44,15 @@ python manage.py test tests.test_api_core.AgentsCoreApiTests.test_create_run_ass
 
 | Archivo | Qué cubre | BD real |
 |---|---|---|
-| `test_api_core.py` | API REST de agentes, runs, steps, trace, memoria, episodios | No (mocks) |
+| `test_api_core.py` | API REST de agentes, runs, steps, trace, memoria, episodios, replan, ejecución paralela de steps, sesiones multi-turno | No (mocks) |
 | `test_heuristics.py` | Clasificación de dominio, selección de tools, normalización de texto | No |
 | `test_llm_synthesizer.py` | Extracción de hechos estructurados desde outputs de tools | No |
 | `test_gis_inference.py` | Clasificación de geometría, inferencia de capas por goal | No |
 | `test_gis_network_costing.py` | Motor de costes: grafo, multiplicadores, restricciones | No |
 | `test_gis_network_api.py` | API de `spatial.network_service_area` (mocks de invoke_tool) | No (mocks) |
 | `test_gis_network_integration.py` | Integración real de tools de red contra BD local de test | Sí (local) |
+| `test_gis_aggregate.py` | Tool `spatial.aggregate`: unitarios (mocks) + integración local | Sí (local) |
+| `test_gis_buffer.py` | Tool `spatial.buffer`: unitarios (mocks) + integración local | Sí (local) |
 | `test_gis_alias.py` | Registro de aliases de BD en `agents_gis.service` | No |
 | `test_gis_inspect.py` | Introspección GIS: unitarios (mocks) + integración BD remota | Opcional |
 
@@ -59,10 +61,26 @@ python manage.py test tests.test_api_core.AgentsCoreApiTests.test_create_run_ass
 No son `unittest` — se ejecutan directamente con Python contra la BD real.
 No tienen aserciones automáticas: imprimen resultados para inspección visual.
 
-| Script | Qué cubre | BD necesaria |
+| Script | Dominio GIS | BD necesaria |
 |---|---|---|
-| `manual/catastro.py` | Catastro español (parcelas, edificios, direcciones) + red catastral | BD remota catastro |
-| `manual/planex.py` | Infraestructura Planex (span/struct) + red de canalización | BD remota Planex |
+| `manual/catastro.py` | Catastro español: parcelas, edificios, direcciones | BD remota catastro |
+| `manual/planex.py` | Infraestructura telecom Planex: tramos (span), estructuras (struct) | BD remota Planex |
+
+Cada script configura su agente con un `system_prompt` específico del dominio.
+Ver la sección **Domain Configuration** en `CLAUDE.md` para ejemplos de `system_prompt` por dominio.
+
+---
+
+## Domain-agnostic design
+
+GeoAgents funciona con cualquier dominio GIS: infraestructura, catastro, vegetación, activos urbanos, etc.
+
+El `system_prompt` del agente es el **punto de configuración del dominio**. El planner LLM lo usa para:
+- Interpretar la terminología del usuario y mapearla a capas reales del catálogo
+- Decidir si existe red topológica (y si procede usar `spatial.network_trace`)
+- Adaptar la síntesis al vocabulario del dominio
+
+Las heurísticas (`agents_core/heuristics/`) son **agnósticas al dominio**: solo responden a keywords de operación espacial genérica (ruta, proximidad, intersección, agrupación…), no a nombres de capa ni términos específicos de un sector.
 
 ---
 

@@ -18,7 +18,9 @@ def classify_goal_domain(goal: str, tools_used: Sequence[str] | None = None) -> 
     tools_used = list(tools_used or [])
 
     if "spatial.network_trace" in tools_used or any(
-        token in normalized for token in ("traza", "trace", "red", "network", "ruta")
+        token in normalized for token in (
+            "traza", "trace", "red", "network", "ruta", "grafo", "topolog"
+        )
     ):
         return "network"
     if "spatial.intersects" in tools_used or any(

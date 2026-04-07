@@ -95,6 +95,17 @@ class Run(models.Model):
 
     final_text = models.TextField(blank=True, default="")
 
+    # Identificador de sesión conversacional.
+    # Runs con el mismo session_id forman una conversación multi-turno.
+    # El planner recibe el historial condensado de la sesión como contexto.
+    session_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Sesión conversacional. Runs con el mismo session_id reciben contexto de turnos anteriores.",
+    )
+
     def __str__(self):
         return f"Run#{self.pk} agent={self.agent.pk} status={self.status}"
 

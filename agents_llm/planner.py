@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from agents_tools.introspection import export_tools_catalog
 from agents_gis.introspection import export_gis_layers_catalog
@@ -12,9 +12,20 @@ from .plan_postprocessor import normalize_plan
 from .plan_validation import validate_plan, validate_plan_gis_references
 
 PLANNER_SYSTEM_PROMPT = """
-Eres un planificador de un framework de agentes.
+Eres un planificador de un framework de agentes GIS de propósito general.
 
 Tu trabajo es devolver SIEMPRE un JSON válido con una clave "steps".
+
+Contexto temático del agente:
+- El campo agent_system_prompt define el dominio temático del agente: infraestructura, catastro, vegetación, activos, redes viarias, etc.
+- Usa agent_system_prompt para entender a qué entidades reales se refiere el objetivo y adaptar tu interpretación del vocabulario del usuario.
+- Los nombres de capas deben salir EXCLUSIVAMENTE de gis_layers_catalog, nunca de conocimiento previo.
+  Ejemplo: si agent_system_prompt dice "capas disponibles: parcelas, edificios, viales" y el objetivo
+  menciona "parcelas", busca en gis_layers_catalog la capa cuyo nombre coincida semánticamente.
+- Si el objetivo usa terminología específica del dominio (p.ej. "tramo" en infraestructura, "parcela"
+  en catastro, "rodal" en vegetación), interpreta esa terminología usando agent_system_prompt y
+  mapea al nombre de capa correcto en gis_layers_catalog.
+- Si agent_system_prompt no informa sobre el dominio, razona solo con gis_layers_catalog.
 
 - Debes tener en cuenta agent_profile.
 - Si agent_profile = "compact", prioriza planes muy cortos, normalmente con una sola tool.
@@ -52,15 +63,40 @@ Reglas de contexto:
 - Si una tool requiere bbox y existe map_context.bbox, debes incluirlo en args.
 - Si una tool acepta zoom y existe map_context.zoom, debes incluirlo en args cuando sea útil.
 - No generes pasos redundantes.
-- Si el objetivo es un resumen espacial general de una zona, prioriza un único step con spatial.context_pack.
+
+Guía de selección de herramienta — sigue este orden de prioridad:
+1. Si el objetivo menciona ruta, camino, trazado, conexión entre dos puntos, o recorrido por un grafo topológico → usa spatial.network_trace o spatial.route_cost.
+2. Si el objetivo menciona área alcanzable, cobertura de servicio, zona de influencia desde un origen en una red → usa spatial.network_service_area.
+3. Si el objetivo menciona elementos cercanos a un punto → usa spatial.nearby.
+   Si el objetivo menciona "a X metros de este elemento" donde ese elemento es una geometría de capa (línea, polígono…) → usa spatial.buffer con source_layer+source_id.
+4. Si el objetivo menciona intersección, solape, relación espacial entre dos capas, o elementos contenidos en otra capa → usa spatial.intersects.
+5. Si el objetivo menciona cuántos hay por tipo/categoría, distribución, agrupaciones, predominancia, o suma/promedio de un campo → usa spatial.aggregate.
+6. Si el objetivo menciona inventario, listado, campos específicos de una capa, o nombra explícitamente una capa del catálogo → usa spatial.query_layer o spatial.summary.
+7. SOLO si el objetivo es verdaderamente genérico ("qué hay en esta zona", "resume el entorno", "dame contexto general") y NO menciona ninguna capa, operación, ni término del dominio → usa spatial.context_pack.
+
+Para spatial.aggregate:
+- Úsalo cuando el objetivo pide recuentos por tipo, categoría, distribución estadística o suma de un campo.
+- group_by acepta hasta 4 campos de filter_fields de la capa.
+- aggs es opcional; sin él devuelve solo COUNT(*) por grupo.
+- success_criteria recomendada: {"path": "data.groups", "non_empty": true}
+
+NUNCA uses spatial.context_pack cuando:
+- El objetivo menciona una capa por nombre (cualquiera que aparezca en gis_layers_catalog o en agent_system_prompt).
+- El objetivo menciona una operación específica (inventario, ruta, cobertura, conteo, tipos, buffer…).
+- El objetivo menciona un análisis de red o grafo aunque no dé puntos de origen/destino.
+- heuristics.initial_tools contiene una herramienta distinta a context_pack.
 
 Reglas GIS:
 - Si usas una tool que requiere una capa (layer, source_layer, target_layer), debes elegir nombres EXCLUSIVAMENTE de gis_layers_catalog.
 - No inventes nombres de capas.
 - Si necesitas filtros, usa solo campos presentes en filter_fields de la capa correspondiente.
-- Si el objetivo menciona proximidad, suele ser adecuado usar spatial.nearby.
+- Usa agent_system_prompt para interpretar terminología del dominio y mapearla al nombre de capa correcto en gis_layers_catalog.
+- Si el objetivo menciona proximidad a un punto, suele ser adecuado usar spatial.nearby.
+- Si el objetivo menciona elementos dentro del área de influencia de una geometría de capa (línea, polígono, elemento de cualquier tipo), usa spatial.buffer con source_layer+source_id.
+- Para spatial.buffer: source_point y (source_layer+source_id) son mutuamente excluyentes. Si la fuente es un punto usa source_point; si es un elemento de capa usa source_layer+source_id.
 - Si el objetivo menciona intersección, solape, cruce o elementos contenidos entre capas, suele ser adecuado usar spatial.intersects.
 - Si el objetivo es explorar una capa concreta dentro de un bbox, suele ser adecuado usar spatial.query_layer.
+- Si el objetivo habla de una red o grafo topológico sin dar puntos concretos, usa spatial.summary para obtener recuento por capas y spatial.query_layer para listar elementos; reserva network_trace/route_cost para cuando haya origen y destino explícitos.
 
 Reglas específicas por tool:
 - Para spatial.network_trace, si verificas éxito de ruta, usa:
@@ -96,6 +132,13 @@ Si execution_context está presente:
 - Evita repetir pasos ya ejecutados correctamente salvo que sea imprescindible.
 - Si hubo un fallo o una hipótesis refutada, puedes proponer una estrategia alternativa con nuevas tools o nuevos args.
 - Mantén el plan reparado lo más corto posible.
+
+Si session_context está presente:
+- session_context contiene los turnos anteriores de la misma conversación: goal, final_text y tools_used de cada run previo.
+- Úsalo para entender el hilo conversacional y evitar repetir análisis ya realizados.
+- Si el usuario hace una pregunta de seguimiento ("¿y los de tipo X?", "ahora filtra por…", "usa el mismo bbox"), infiere el contexto del turno anterior.
+- No menciones explícitamente que tienes un historial; simplemente planifica teniendo en cuenta lo que ya se sabe.
+- Si el turno anterior usó un bbox concreto y el nuevo goal no especifica uno diferente, reutiliza ese bbox.
 """
 
 
@@ -115,6 +158,46 @@ def filter_planner_examples_by_allowlist(examples, allowlist):
         if ok:
             out.append(ex)
     return out
+
+
+def _build_session_context(run) -> Optional[List[Dict[str, Any]]]:
+    """
+    Recupera los últimos runs de la misma sesión (excluyendo el actual)
+    y devuelve un resumen condensado para el planner.
+    """
+    session_id = getattr(run, "session_id", "") or ""
+    if not session_id:
+        return None
+
+    try:
+        from agents_core.models import Run as RunModel
+        previous = (
+            RunModel.objects.filter(
+                agent=run.agent,
+                session_id=session_id,
+                status="succeeded",
+            )
+            .exclude(pk=run.pk)
+            .order_by("-created_at")[:5]
+        )
+        history = []
+        for prev in reversed(list(previous)):
+            entry: Dict[str, Any] = {
+                "run_id": prev.pk,
+                "goal": (prev.input_json or {}).get("goal", ""),
+                "final_text": (prev.final_text or "")[:500],
+            }
+            out = prev.output_json or {}
+            tools_used = [
+                s.get("name") for s in out.get("executed_outputs", [])
+                if s.get("type") == "tool" and s.get("ok")
+            ]
+            if tools_used:
+                entry["tools_used"] = tools_used
+            history.append(entry)
+        return history if history else None
+    except Exception:
+        return None
 
 
 def build_planner_user_prompt(
@@ -147,6 +230,10 @@ def build_planner_user_prompt(
     }
     if execution_context:
         extra["execution_context"] = execution_context
+
+    session_context = _build_session_context(run)
+    if session_context:
+        extra["session_context"] = session_context
 
     return json.dumps(extra, ensure_ascii=False, indent=2)
 

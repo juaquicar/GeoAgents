@@ -680,6 +680,112 @@ class AgentsCoreApiTests(APITestCase):
         ids = [item["id"] for item in filtered.data]
         self.assertIn(run.id, ids)
 
+    # ── Replan por fallo de tool ─────────────────────────────────────────────
+
+    @patch("agents_core.runner.synthesize_run", return_value="síntesis tras replan")
+    @patch("agents_core.runner.invoke_tool")
+    @patch("agents_core.runner.plan_run")
+    def test_tool_failure_with_abort_policy_triggers_replan(
+        self, mock_plan_run, mock_invoke_tool, _mock_synthesize
+    ):
+        """Un tool que falla con on_fail=abort debe disparar replan automático."""
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={"goal": "Análisis de red con fallo"},
+        )
+
+        failed_tool = SimpleNamespace(ok=False, data={}, error="layer not found: unknown_layer")
+        ok_tool = SimpleNamespace(ok=True, data={"layers": [{"layer": "demo_lines", "count": 5}]}, error="")
+
+        initial_plan = {
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "tool",
+                    "name": "spatial.query_layer",
+                    "args": {"layer": "unknown_layer"},
+                    "required": True,
+                    "on_fail": "abort",
+                    "can_replan": False,  # no importa: abort+fail → replan igualmente
+                },
+                {"type": "final"},
+            ]
+        }
+        replanned = {
+            "steps": [
+                {
+                    "id": "s2",
+                    "type": "tool",
+                    "name": "spatial.network_trace",
+                    "args": {
+                        "layer": "demo_lines",
+                        "start_point": {"lon": -6.06, "lat": 37.32},
+                        "end_point": {"lon": -6.05, "lat": 37.33},
+                    },
+                    "required": True,
+                    "on_fail": "continue",
+                },
+                {"type": "final"},
+            ]
+        }
+
+        mock_plan_run.side_effect = [initial_plan, replanned]
+        mock_invoke_tool.side_effect = [(failed_tool, 10), (ok_tool, 15)]
+
+        url = reverse("runs-execute", kwargs={"pk": run.id})
+        response = self.client.post(url, {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "succeeded")
+        self.assertEqual(response.data["replan_count"], 1)
+        # plan_run se llamó dos veces: plan inicial + replan
+        self.assertEqual(mock_plan_run.call_count, 2)
+        # La segunda llamada a plan_run recibe execution_context con replan_reason
+        _, kwargs = mock_plan_run.call_args_list[1]
+        exec_ctx = kwargs.get("execution_context") or mock_plan_run.call_args_list[1][0][2]
+        self.assertEqual(exec_ctx["replan_reason"], "tool_failed")
+        self.assertIn("layer not found", exec_ctx["replan_hint"])
+
+    @patch("agents_core.runner.synthesize_run", return_value="síntesis sin replan")
+    @patch("agents_core.runner.invoke_tool")
+    @patch("agents_core.runner.plan_run")
+    def test_tool_failure_with_continue_policy_does_not_replan(
+        self, mock_plan_run, mock_invoke_tool, _mock_synthesize
+    ):
+        """Un tool que falla con on_fail=continue NO debe disparar replan."""
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={"goal": "consulta con fallo no crítico"},
+        )
+
+        failed_tool = SimpleNamespace(ok=False, data={}, error="no data")
+        mock_plan_run.return_value = {
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "tool",
+                    "name": "spatial.query_layer",
+                    "args": {"layer": "demo_lines"},
+                    "required": False,
+                    "on_fail": "continue",
+                    "can_replan": False,
+                },
+                {"type": "final"},
+            ]
+        }
+        mock_invoke_tool.return_value = (failed_tool, 5)
+
+        url = reverse("runs-execute", kwargs={"pk": run.id})
+        response = self.client.post(url, {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "succeeded")
+        self.assertEqual(response.data["replan_count"], 0)
+        # plan_run se llamó solo una vez (no replan)
+        self.assertEqual(mock_plan_run.call_count, 1)
+
     # ── Tool call directo: persiste memoria y episodio ───────────────────────
     # Nota: los tool calls directos no pasan por el ciclo de verificación del
     # planner (no hay success_criteria). El runner devuelve el resultado raw
@@ -744,3 +850,202 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(run.memory.verification_status, "not_evaluated")
         self.assertEqual(run.episode.verification_status, "not_evaluated")
         self.assertTrue(run.episode.success)  # ok=True, no refutado
+
+
+# ── Paralelismo de steps ─────────────────────────────────────────────────────
+
+class ParallelStepsTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(username="par_user", password="x")
+        self.token = Token.objects.create(user=self.user)
+        self.agent = Agent.objects.create(
+            name="par-agent",
+            profile="investigate",
+            is_active=True,
+            tool_allowlist=["spatial.query_layer", "spatial.nearby"],
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+
+    @patch("agents_core.runner.synthesize_run", return_value="síntesis paralela")
+    @patch("agents_core.runner.invoke_tool")
+    @patch("agents_core.runner.plan_run")
+    def test_independent_steps_execute_and_collect_both_results(
+        self, mock_plan_run, mock_invoke_tool, _mock_synthesize
+    ):
+        """Dos steps sin depends_on entre sí se ejecutan en la misma wave y ambos aparecen en output."""
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={"goal": "Consulta dos capas independientes"},
+        )
+        mock_plan_run.return_value = {
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "tool",
+                    "name": "spatial.query_layer",
+                    "args": {"layer": "demo_points"},
+                    "required": True,
+                    "depends_on": [],
+                    "on_fail": "continue",
+                },
+                {
+                    "id": "s2",
+                    "type": "tool",
+                    "name": "spatial.nearby",
+                    "args": {"layer": "demo_points", "point": {"lon": -6.0, "lat": 37.0}, "radius_m": 50},
+                    "required": True,
+                    "depends_on": [],  # sin dependencia: puede ir en paralelo
+                    "on_fail": "continue",
+                },
+                {"type": "final"},
+            ]
+        }
+        mock_invoke_tool.return_value = (
+            _tool_ok({"items": [{"id": 1}], "count_total": 1}),
+            10,
+        )
+
+        url = reverse("runs-execute", kwargs={"pk": run.id})
+        response = self.client.post(url, {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "succeeded")
+        self.assertEqual(len(response.data["executed_outputs"]), 2)
+        names = {s["name"] for s in response.data["executed_outputs"]}
+        self.assertIn("spatial.query_layer", names)
+        self.assertIn("spatial.nearby", names)
+
+    @patch("agents_core.runner.synthesize_run", return_value="síntesis secuencial")
+    @patch("agents_core.runner.invoke_tool")
+    @patch("agents_core.runner.plan_run")
+    def test_dependent_steps_execute_sequentially(
+        self, mock_plan_run, mock_invoke_tool, _mock_synthesize
+    ):
+        """Un step con depends_on en otro va en una wave posterior (secuencial respecto al primero)."""
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={"goal": "Primero localiza, luego busca cerca"},
+        )
+        mock_plan_run.return_value = {
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "tool",
+                    "name": "spatial.query_layer",
+                    "args": {"layer": "demo_points"},
+                    "required": True,
+                    "depends_on": [],
+                    "on_fail": "continue",
+                },
+                {
+                    "id": "s2",
+                    "type": "tool",
+                    "name": "spatial.nearby",
+                    "args": {
+                        "layer": "demo_points",
+                        "point": {"lon": "$step:s1.data.items.0.lon", "lat": "$step:s1.data.items.0.lat"},
+                        "radius_m": 50,
+                    },
+                    "required": True,
+                    "depends_on": ["s1"],  # secuencial
+                    "on_fail": "continue",
+                },
+                {"type": "final"},
+            ]
+        }
+        mock_invoke_tool.return_value = (
+            _tool_ok({"items": [{"id": 1, "lon": -6.0, "lat": 37.0}], "count_total": 1}),
+            10,
+        )
+
+        url = reverse("runs-execute", kwargs={"pk": run.id})
+        response = self.client.post(url, {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["executed_outputs"]), 2)
+        # s1 debe aparecer antes que s2
+        ids = [s["id"] for s in response.data["executed_outputs"]]
+        self.assertEqual(ids, ["s1", "s2"])
+
+
+# ── Multi-turno (session_id) ─────────────────────────────────────────────────
+
+class SessionContextTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(username="ses_user", password="x")
+        self.token = Token.objects.create(user=self.user)
+        self.agent = Agent.objects.create(
+            name="ses-agent",
+            profile="investigate",
+            is_active=True,
+            tool_allowlist=["spatial.query_layer"],
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+
+    def test_run_accepts_session_id(self):
+        url = reverse("runs-list")
+        response = self.client.post(url, {
+            "agent": self.agent.id,
+            "session_id": "test-session-42",
+            "input_json": {"goal": "primera consulta"},
+        }, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["session_id"], "test-session-42")
+
+    def test_run_session_id_persists(self):
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            session_id="ses-abc",
+            input_json={"goal": "primera"},
+        )
+        run.refresh_from_db()
+        self.assertEqual(run.session_id, "ses-abc")
+
+    def test_session_context_returns_previous_runs(self):
+        """_build_session_context devuelve historial condensado de runs previos en la sesión."""
+        from agents_llm.planner import _build_session_context
+
+        # Primer run (succeeded) en la sesión
+        run1 = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            session_id="ses-hist",
+            status="succeeded",
+            input_json={"goal": "primer turno"},
+            final_text="resultado del primer turno",
+            output_json={"executed_outputs": [
+                {"type": "tool", "name": "spatial.query_layer", "ok": True}
+            ]},
+        )
+        # Segundo run (el actual, no debe aparecer en el historial)
+        run2 = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            session_id="ses-hist",
+            status="queued",
+            input_json={"goal": "segundo turno"},
+        )
+
+        history = _build_session_context(run2)
+        self.assertIsNotNone(history)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["run_id"], run1.pk)
+        self.assertEqual(history[0]["goal"], "primer turno")
+        self.assertIn("resultado del primer turno", history[0]["final_text"])
+        self.assertIn("spatial.query_layer", history[0]["tools_used"])
+
+    def test_session_context_empty_without_session_id(self):
+        """Sin session_id, _build_session_context devuelve None."""
+        from agents_llm.planner import _build_session_context
+
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={"goal": "sin sesión"},
+        )
+        self.assertIsNone(_build_session_context(run))

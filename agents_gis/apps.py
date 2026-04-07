@@ -12,3 +12,5 @@ class AgentsGisConfig(AppConfig):
         from . import tools_intersects  # noqa
         from . import tools_context  # noqa
         from . import tools_network_trace # noqa
+        from . import tools_aggregate  # noqa
+        from . import tools_buffer     # noqa

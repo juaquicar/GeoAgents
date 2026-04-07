@@ -1,6 +1,7 @@
 import copy
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
@@ -313,11 +314,21 @@ def _should_replan(
 ) -> bool:
     if replan_count >= MAX_REPLANS:
         return False
+
+    # Tool failure en un step crítico (abort policy) → replan automático,
+    # independientemente de can_replan. El error llega al LLM como contexto
+    # para que proponga una estrategia alternativa (capa distinta, args corregidos…).
+    if not step_result.get("ok"):
+        on_fail = _compute_on_fail(
+            bool(step.get("required", True)), step.get("on_fail")
+        )
+        if on_fail == "abort":
+            return True
+        return False  # on_fail=continue: no replan, simplemente continuamos
+
+    # Step OK: replan solo si can_replan=True y la hipótesis fue refutada/inconclusa
     if not bool(step.get("can_replan", False)):
         return False
-
-    if not step_result.get("ok"):
-        return True
 
     verification_status = ((step_result.get("verification") or {}).get("status") or "").strip()
     return verification_status in {"refuted", "inconclusive"}
@@ -354,13 +365,36 @@ def _build_replan_execution_context(
     previous_plan: Dict[str, Any],
     replan_count: int,
 ) -> Dict[str, Any]:
+    last = _truncate_output_for_replan(failed_step)
+
+    # Clasificar la causa del replan para orientar al LLM
+    if not failed_step.get("ok"):
+        replan_reason = "tool_failed"
+        replan_hint = (
+            f"La tool '{failed_step.get('name')}' falló con error: "
+            f"{failed_step.get('error', 'unknown')}. "
+            "Propón una estrategia alternativa: capa diferente, args corregidos, "
+            "o tool distinta que consiga el mismo objetivo."
+        )
+    else:
+        verification_status = (
+            (failed_step.get("verification") or {}).get("status") or "inconclusive"
+        )
+        replan_reason = f"hypothesis_{verification_status}"
+        replan_hint = (
+            f"La hipótesis del step '{failed_step.get('name')}' fue {verification_status}. "
+            "Propón pasos alternativos que aporten evidencia suficiente para el objetivo."
+        )
+
     return {
         "goal": payload.get("goal", ""),
         "map_context": payload.get("map_context") or {},
         "replan_count": replan_count,
+        "replan_reason": replan_reason,
+        "replan_hint": replan_hint,
         "previous_plan_steps": previous_plan.get("steps", []),
         "executed_steps": [_truncate_output_for_replan(s) for s in executed_outputs],
-        "last_step": _truncate_output_for_replan(failed_step),
+        "last_step": last,
     }
 
 
@@ -516,6 +550,107 @@ def _execute_tool_step(
     return result
 
 
+def _compute_parallel_waves(
+    steps: List[Dict[str, Any]],
+    start_idx: int,
+) -> List[List[int]]:
+    """
+    Agrupa los índices de steps tool en oleadas (waves) de ejecución paralela.
+    Dos steps van en la misma oleada si ninguno de ellos depende del otro
+    (ni por depends_on ni por referencias $step:).
+    """
+    completed_ids: set = set()
+    waves: List[List[int]] = []
+    remaining = [
+        i for i in range(start_idx, len(steps))
+        if steps[i].get("type") == "tool"
+    ]
+
+    while remaining:
+        wave: List[int] = []
+        next_remaining: List[int] = []
+
+        for idx in remaining:
+            step = steps[idx]
+            deps = set(step.get("depends_on") or [])
+            refs = set(_extract_step_references(step.get("args") or {}))
+            required_ids = deps | refs
+            if required_ids.issubset(completed_ids):
+                wave.append(idx)
+            else:
+                next_remaining.append(idx)
+
+        if not wave:
+            # Dependencias circulares o no resolubles: ejecutar el primero restante
+            wave.append(remaining[0])
+            next_remaining = remaining[1:]
+
+        wave_step_ids = {steps[i].get("id") for i in wave if steps[i].get("id")}
+        completed_ids |= wave_step_ids
+        waves.append(wave)
+        remaining = next_remaining
+
+    return waves
+
+
+def _execute_wave(
+    *,
+    run,
+    wave_indices: List[int],
+    steps: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+    executed_outputs: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Ejecuta una oleada de steps en paralelo si hay más de uno.
+    Devuelve los resultados en el mismo orden que wave_indices.
+    """
+    if len(wave_indices) == 1:
+        result = _execute_tool_step(
+            run=run,
+            step=steps[wave_indices[0]],
+            payload=payload,
+            executed_outputs=executed_outputs,
+        )
+        return [result]
+
+    results_by_idx: Dict[int, Dict[str, Any]] = {}
+
+    # Pre-cargar relaciones FK para evitar queries lazy desde threads secundarios
+    # (los threads tienen sus propias conexiones DB y no ven transacciones no committed)
+    _ = run.agent   # noqa: F841
+    _ = run.user    # noqa: F841
+
+    # Capturar snapshot del contexto GIS actual para propagarlo a los threads
+    from agents_gis.context import _current_agent
+    agent_ctx = _current_agent.get(None)
+
+    def _run_step(idx: int) -> tuple:
+        from agents_gis.context import set_agent_context, _current_agent as _ctx
+        token = None
+        if agent_ctx is not None:
+            token = set_agent_context(agent_ctx)
+        try:
+            res = _execute_tool_step(
+                run=run,
+                step=steps[idx],
+                payload=payload,
+                executed_outputs=list(executed_outputs),  # snapshot inmutable
+            )
+        finally:
+            if token is not None:
+                _ctx.reset(token)
+        return idx, res
+
+    with ThreadPoolExecutor(max_workers=min(len(wave_indices), 4)) as executor:
+        futures = {executor.submit(_run_step, idx): idx for idx in wave_indices}
+        for future in as_completed(futures):
+            idx, res = future.result()
+            results_by_idx[idx] = res
+
+    return [results_by_idx[idx] for idx in wave_indices]
+
+
 def _append_plan_history(plan_history: List[Dict[str, Any]], plan: Dict[str, Any], label: str) -> None:
     plan_history.append(
         {
@@ -632,29 +767,35 @@ def execute_run(run: Run) -> Run:
                 start_idx = _find_resume_index(steps, executed_outputs)
                 replan_triggered = False
 
-                for idx in range(start_idx, len(steps)):
-                    step = steps[idx]
-                    step_type = step.get("type")
+                waves = _compute_parallel_waves(steps, start_idx)
 
-                    if step_type == "final":
-                        break
-
-                    if step_type != "tool":
-                        raise ValueError(f"Unknown planner step type: {step_type}")
-
-                    step_result = _execute_tool_step(
+                for wave_indices in waves:
+                    wave_results = _execute_wave(
                         run=run,
-                        step=step,
+                        wave_indices=wave_indices,
+                        steps=steps,
                         payload=payload,
                         executed_outputs=executed_outputs,
                     )
-                    executed_outputs.append(step_result)
 
-                    if _should_replan(
-                        step=step,
-                        step_result=step_result,
-                        replan_count=replan_count,
-                    ):
+                    # Incorporar resultados al contexto (en orden del plan)
+                    for step_result in wave_results:
+                        executed_outputs.append(step_result)
+
+                    # Evaluar replan / abort en orden del plan
+                    steps_by_id = {s.get("id"): s for s in steps if s.get("type") == "tool"}
+                    replan_step = None
+                    abort_step = None
+                    for step_result in wave_results:
+                        step = steps_by_id.get(step_result.get("id"), {})
+                        if _should_replan(step=step, step_result=step_result, replan_count=replan_count):
+                            replan_step = (step, step_result)
+                            break
+                        if not step_result.get("ok") and step_result.get("on_fail") == "abort":
+                            abort_step = step_result
+
+                    if replan_step:
+                        step, step_result = replan_step
                         replan_count += 1
                         execution_context = _build_replan_execution_context(
                             payload=payload,
@@ -663,7 +804,6 @@ def execute_run(run: Run) -> Run:
                             previous_plan=plan,
                             replan_count=replan_count,
                         )
-
                         log_step(
                             run,
                             kind="llm",
@@ -671,15 +811,9 @@ def execute_run(run: Run) -> Run:
                             input_json={"goal": goal, "execution_context": execution_context},
                             output_json={},
                         )
-
-                        plan = plan_run(
-                            run,
-                            payload,
-                            execution_context=execution_context,
-                        )
+                        plan = plan_run(run, payload, execution_context=execution_context)
                         _enforce_plan_limits(plan)
                         _append_plan_history(plan_history, plan, f"replan_{replan_count}")
-
                         log_step(
                             run,
                             kind="llm",
@@ -687,13 +821,12 @@ def execute_run(run: Run) -> Run:
                             input_json={"goal": goal, "execution_context": execution_context},
                             output_json=plan,
                         )
-
                         replan_triggered = True
                         break
 
-                    if not step_result.get("ok") and step_result.get("on_fail") == "abort":
+                    if abort_step:
                         raise ValueError(
-                            f"Tool step failed with abort policy: {step_result.get('name')} -> {step_result.get('error')}"
+                            f"Tool step failed with abort policy: {abort_step.get('name')} -> {abort_step.get('error')}"
                         )
 
                 if not replan_triggered:

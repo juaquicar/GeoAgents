@@ -139,6 +139,33 @@ Estas permiten:
 
 En la práctica, `Run` ya no es solo un contenedor transaccional de ejecución. También es la unidad base de memoria operacional del framework.
 
+### Campos destacados de Run
+
+| Campo | Tipo | Propósito |
+|---|---|---|
+| `session_id` | CharField | Agrupa runs en conversaciones multi-turno. El planner recibe historial condensado de la sesión. |
+| `input_json.goal` | str | Objetivo en lenguaje natural. |
+| `input_json.tool_call` | object | Invocación directa de una tool (bypass del planner). |
+| `input_json.map_context.bbox` | object | Bounding box del mapa activo; se inyecta automáticamente en tools espaciales. |
+
+### Campos destacados de Agent
+
+| Campo | Tipo | Propósito |
+|---|---|---|
+| `system_prompt` | TextField | **Configurador de dominio temático.** Define vocabulario, capas disponibles y restricciones del agente. Ver sección Domain Configuration. |
+| `profile` | CharField | `compact` / `rich` / `investigate` — afecta al plan y la síntesis. |
+| `tool_allowlist` | JSONField | Tools que puede usar este agente. |
+| `gis_db_connections` | JSONField | Conexiones a BBDDs GIS propias del agente. |
+| `gis_layers_catalog` | JSONField | Catálogo de capas GIS (auto-generado por introspección). |
+
+### Domain Configuration
+
+GeoAgents es **agnóstico al dominio temático**. El mismo motor funciona para infraestructura de telecomunicaciones, catastro, vegetación, activos urbanos o cualquier otro tipo de datos GIS.
+
+El `system_prompt` del agente es el punto de configuración del dominio. El planner LLM lo usa para interpretar la terminología del usuario y mapearla a las capas reales del catálogo.
+
+Ver ejemplos de `system_prompt` por dominio en `CLAUDE.md`.
+
 ## runner
 
 Es la pieza central del ciclo de ejecución.
@@ -163,6 +190,29 @@ En el estado actual, soporta dos modos principales:
 
 * ejecución planificada a partir de `goal`
 * ejecución directa de una tool vía `tool_call`
+
+### Ejecución paralela de steps
+
+El runner agrupa los steps del plan en **oleadas (waves)** de ejecución paralela.
+Dos steps van en la misma wave si ninguno depende del otro (ni por `depends_on` ni por referencias `$step:`).
+Las waves se calculan en `_compute_parallel_waves()` y se ejecutan con `ThreadPoolExecutor` (máx. 4 workers).
+
+Ejemplo de plan con paralelismo implícito:
+```json
+[
+  {"id": "s1", "depends_on": []},      // wave 1 ┐
+  {"id": "s2", "depends_on": []},      // wave 1 ┘ → ejecutan en paralelo
+  {"id": "s3", "depends_on": ["s1"]}   // wave 2   → espera a s1
+]
+```
+
+### Replan automático
+
+El runner puede replantear (llamar al planner de nuevo) cuando:
+* un step falla (`ok=False`) con política `on_fail=abort`
+* un step verifica con hipótesis `refuted` o `inconclusive` y tiene `can_replan=True`
+
+El contexto de replan incluye `replan_reason` y `replan_hint` para orientar al LLM hacia una estrategia alternativa.
 
 ## steps
 
@@ -209,6 +259,8 @@ Esta capa transforma una ejecución puntual en conocimiento operativo reutilizab
 Agrupa lógica heurística reutilizable para análisis de resultados, clasificación de ejecución y sugerencias de estrategia.
 
 Esta capa no sustituye al planner, pero reduce fragilidad y permite construir comportamiento más estable sobre ejecuciones ya observadas.
+
+**Principio de diseño: domain-agnostic.** Las heurísticas solo responden a keywords de operación espacial genérica (ruta, proximidad, intersección, agrupación). Los nombres de capa y términos específicos de sector (infraestructura, catastro, vegetación…) no se hardcodean aquí — son responsabilidad del `system_prompt` del agente y del LLM planner.
 
 ## serializers / views / urls
 

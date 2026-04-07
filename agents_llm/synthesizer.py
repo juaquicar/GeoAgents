@@ -11,44 +11,46 @@ Eres un analista de resultados de un framework de agentes GIS.
 
 Tu trabajo es redactar una respuesta final clara, útil y estrictamente basada en las evidencias disponibles.
 
-Reglas:
+Reglas generales:
 - No inventes datos.
 - No hagas inferencias geométricas no demostradas explícitamente por las tools.
 - Si una tool no se ejecutó, no afirmes conclusiones que dependan de ella.
-- Si una tool devuelve count_total > 0, puedes afirmar que existen resultados/intersecciones/elementos encontrados.
+- Si una tool devuelve count_total > 0, puedes afirmar que existen elementos encontrados.
 - Si una tool devuelve count_total = 0, puedes afirmar que no se encontraron resultados en esa consulta.
 - No digas que una geometría está "en la frontera", "dentro parcialmente", "contenida completamente" o similares salvo que eso haya sido demostrado explícitamente por los datos.
 - Si el análisis es espacial, usa lenguaje geoespacial claro y prudente.
-- Si intersection_geom_type = POINT, puedes afirmar que existe una intersección puntual, pero no debes interpretar eso como "misma ubicación", "frontera", "contenido completo" o equivalentes.
-- Distingue entre "intersecta con" y "está dentro de". Solo usa "está dentro de" si el objetivo y los resultados lo justifican claramente.
-- Cuando la evidencia procede de spatial.intersects, la formulación preferida es "se detectó intersección entre X e Y".
 - Prioriza exactitud frente a estilo.
 - La respuesta debe estar en español.
-- No afirmes que no existen intersecciones salvo que se haya ejecutado explícitamente spatial.intersects y count_total sea 0.
-- No afirmes que un elemento no está dentro de una zona salvo que exista evidencia explícita de una tool adecuada para esa comprobación.
-- Si solo se ejecutó spatial.context_pack, limítate a describir contexto espacial general y no saques conclusiones topológicas específicas.
-
-Reglas adicionales obligatorias:
-- No afirmes contención, inclusión o que un elemento "está dentro" de otro salvo que exista una herramienta o evidencia explícita de contención.
-- Si la evidencia procede de spatial.intersects, habla únicamente de intersección, cruce o relación espacial detectada.
-- Si spatial.network_trace devuelve path_found = false, deja claro que no se encontró ruta.
-- Si existe un campo reason, úsalo literalmente como motivo técnico cuando sea útil.
 - No inventes capas, entidades, distancias, áreas, longitudes o recuentos que no aparezcan en los hechos estructurados.
 - Sé prudente: si una relación topológica no está demostrada, indícalo expresamente.
+
+Reglas por tool:
+- spatial.intersects: usa "se detectó intersección entre X e Y". No afirmes contención ni inclusión. Si intersection_geom_type = POINT, es una intersección puntual, no una coincidencia de ubicación.
+- spatial.nearby: habla de proximidad y distancias. Menciona el elemento más cercano y su distancia si está disponible.
+- spatial.query_layer: describe el inventario/consulta. Menciona la capa, el total de elementos y los nombres o IDs de muestra.
+- spatial.summary: describe el recuento por capa y tipos geométricos detectados.
+- spatial.context_pack: limítate a describir contexto espacial general. No saques conclusiones topológicas específicas.
+- spatial.network_trace: si path_found = false, deja claro que no se encontró ruta y menciona el motivo técnico (reason) si existe.
+- spatial.route_cost: si path_found = true, describe el coste total, longitud y número de segmentos. Si path_found = false, indica que no existe ruta y el motivo.
+- spatial.aggregate: describe la distribución por grupos. Menciona el grupo dominante (mayor count), el total de grupos y los campos de agrupación.
+- spatial.buffer: describe los elementos encontrados dentro del radio. Menciona el radio, la fuente (punto o elemento de capa), el total encontrado y el más cercano si hay items.
+
+Reglas de verificación:
 - Si existe verification_summary, debes respetar el estado de verificación.
 - Si una hipótesis está "refuted", no la presentes como hallazgo confirmado.
 - Si una hipótesis está "inconclusive", dilo explícitamente.
 - Si una hipótesis está "verified", puedes usarla como evidencia resumida.
 - Prioriza verification_summary frente a cualquier interpretación narrativa libre.
+- No afirmes que no existen intersecciones salvo que se haya ejecutado explícitamente spatial.intersects y count_total sea 0.
 
 Reglas por perfil:
-- Si agent_profile = "compact", responde de forma breve, directa y con poca ornamentación.
+- Si agent_profile = "compact", responde de forma breve, directa y con poca ornamentación. Una sola sección.
 - Si agent_profile = "rich", ofrece algo más de detalle y contexto.
 - Si agent_profile = "investigate", redacta una conclusión más analítica, comparativa y exhaustiva, pero siempre basada en evidencias.
 
-Estructura preferida:
-1. Resumen ejecutivo
-2. Hallazgos principales
+Estructura preferida para "rich" e "investigate":
+1. Resumen ejecutivo (1-2 frases)
+2. Hallazgos principales (lista)
 3. Conclusión
 """
 
@@ -144,29 +146,34 @@ def _facts_from_nearby(data: Dict[str, Any]) -> List[str]:
     facts = []
     layer = data.get("layer", "")
     point = data.get("point", {}) or {}
+    radius_m = data.get("radius_m")
     count_total = data.get("count_total")
     if count_total is None:
         count_total = data.get("count")
-    features = data.get("features") or data.get("items") or data.get("results") or []
+    items = data.get("items") or data.get("features") or data.get("results") or []
     if count_total is None:
-        count_total = len(features)
+        count_total = len(items)
 
+    radio_str = f" (radio {radius_m} m)" if radius_m is not None else ""
     facts.append(
-        f"spatial.nearby encontró {count_total} elementos cercanos en la capa '{layer}' alrededor del punto ({point.get('lon')}, {point.get('lat')})."
+        f"spatial.nearby encontró {count_total} elementos en la capa '{layer}'{radio_str} "
+        f"alrededor del punto ({point.get('lon')}, {point.get('lat')})."
     )
 
-    for item in features[:10]:
-        name = item.get("name") or item.get("label") or item.get("id")
+    if items:
+        closest = items[0]
+        closest_name = closest.get("name") or closest.get("label") or str(closest.get("id", ""))
+        closest_dist = closest.get("distance_m")
+        if closest_dist is not None:
+            facts.append(f"Elemento más cercano: '{closest_name}' a {closest_dist:.1f} m.")
+
+    for item in items[1:5]:
+        name = item.get("name") or item.get("label") or str(item.get("id", ""))
         distance_m = item.get("distance_m")
-        geom_type = item.get("geometry_type") or item.get("geom_type")
         if distance_m is not None:
-            facts.append(
-                f"Elemento cercano '{name}' a distancia {distance_m} metros, geometría {geom_type}."
-            )
+            facts.append(f"Elemento cercano '{name}' a {distance_m:.1f} m.")
         else:
-            facts.append(
-                f"Elemento cercano '{name}', geometría {geom_type}."
-            )
+            facts.append(f"Elemento cercano '{name}'.")
 
     return facts
 
@@ -174,27 +181,35 @@ def _facts_from_nearby(data: Dict[str, Any]) -> List[str]:
 def _facts_from_query_layer(data: Dict[str, Any]) -> List[str]:
     facts = []
     layer = data.get("layer", "")
-    features = data.get("features") or data.get("items") or data.get("results") or []
+    items = data.get("items") or data.get("features") or data.get("results") or []
     count_total = data.get("count_total")
     if count_total is None:
         count_total = data.get("count")
     if count_total is None:
-        count_total = len(features)
+        count_total = len(items)
 
     facts.append(
         f"spatial.query_layer devolvió {count_total} elementos de la capa '{layer}'."
     )
 
-    for item in features[:10]:
-        name = item.get("name") or item.get("label") or item.get("id")
-        geom_type = item.get("geometry_type") or item.get("geom_type")
-        centroid = item.get("centroid")
-        if centroid and isinstance(centroid, dict):
-            facts.append(
-                f"Elemento '{name}' de tipo {geom_type} con centroide aproximado en ({centroid.get('lon')}, {centroid.get('lat')})."
-            )
-        else:
-            facts.append(f"Elemento '{name}' de tipo {geom_type}.")
+    for item in items[:5]:
+        name = item.get("name") or item.get("label") or str(item.get("id", ""))
+        geom_type = item.get("geom_type") or item.get("geometry_type")
+        lon = item.get("lon")
+        lat = item.get("lat")
+        length_m = item.get("length_m")
+        area_m2 = item.get("area_m2")
+
+        parts = [f"Elemento '{name}'"]
+        if geom_type:
+            parts.append(f"tipo {geom_type}")
+        if lon is not None and lat is not None:
+            parts.append(f"en ({lon:.5f}, {lat:.5f})")
+        if length_m and float(length_m) > 0:
+            parts.append(f"longitud {float(length_m):.1f} m")
+        if area_m2 and float(area_m2) > 0:
+            parts.append(f"área {float(area_m2):.1f} m²")
+        facts.append(", ".join(parts) + ".")
 
     return facts
 
@@ -245,6 +260,107 @@ def _facts_from_network_trace(data: Dict[str, Any]) -> List[str]:
     return facts
 
 
+def _facts_from_aggregate(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    group_by = data.get("group_by") or []
+    total_groups = data.get("total_groups", 0)
+    groups = data.get("groups") or []
+    aggs = data.get("aggs") or []
+
+    group_by_str = ", ".join(group_by) if group_by else "?"
+    facts.append(
+        f"spatial.aggregate agrupó la capa '{layer}' por [{group_by_str}]: {total_groups} grupos distintos."
+    )
+
+    if aggs:
+        agg_desc = ", ".join(f"{a['func']}({a['field']})" for a in aggs)
+        facts.append(f"Agregaciones calculadas: {agg_desc}.")
+
+    if groups:
+        top = groups[0]
+        top_key = {k: top.get(k) for k in group_by if k in top}
+        top_count = top.get("count")
+        facts.append(
+            f"Grupo dominante: {top_key} con {top_count} elementos."
+        )
+
+    for g in groups[1:5]:
+        key = {k: g.get(k) for k in group_by if k in g}
+        count = g.get("count")
+        facts.append(f"Grupo {key}: {count} elementos.")
+
+    return facts
+
+
+def _facts_from_buffer(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    target_layer = data.get("target_layer", "")
+    buffer_m = data.get("buffer_m")
+    source = data.get("source") or {}
+    count_total = data.get("count_total", 0)
+    items = data.get("items") or []
+
+    if source.get("type") == "point":
+        src_str = f"el punto ({source.get('lon')}, {source.get('lat')})"
+    else:
+        src_str = f"el elemento {source.get('id')} de la capa '{source.get('layer')}'"
+
+    facts.append(
+        f"spatial.buffer encontró {count_total} elementos de '{target_layer}' "
+        f"en un radio de {buffer_m} m alrededor de {src_str}."
+    )
+
+    if items:
+        closest = items[0]
+        closest_name = closest.get("name") or closest.get("label") or str(closest.get("id", ""))
+        closest_dist = closest.get("distance_m")
+        if closest_dist is not None:
+            facts.append(f"Elemento más cercano al buffer: '{closest_name}' a {closest_dist:.1f} m.")
+
+    for item in items[1:5]:
+        name = item.get("name") or item.get("label") or str(item.get("id", ""))
+        dist = item.get("distance_m")
+        if dist is not None:
+            facts.append(f"Elemento '{name}' a {dist:.1f} m.")
+        else:
+            facts.append(f"Elemento '{name}' dentro del buffer.")
+
+    return facts
+
+
+def _facts_from_route_cost(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    path_found = bool(data.get("path_found"))
+    reason = data.get("reason")
+    layer = data.get("layer", "")
+    metric = data.get("metric", "cost")
+    total_cost = data.get("total_cost")
+    total_length_m = data.get("total_length_m")
+    segment_ids = data.get("segment_ids") or []
+    start_snap_m = data.get("start_snap_m")
+    end_snap_m = data.get("end_snap_m")
+
+    if path_found:
+        facts.append(f"spatial.route_cost encontró una ruta en la capa '{layer}' (métrica: {metric}).")
+        if total_cost is not None:
+            facts.append(f"Coste total de la ruta: {total_cost:.4f}.")
+        if total_length_m is not None:
+            facts.append(f"Longitud total de la ruta: {total_length_m:.1f} m.")
+        if segment_ids:
+            facts.append(f"La ruta atraviesa {len(segment_ids)} segmentos (IDs: {segment_ids[:10]}).")
+        if start_snap_m is not None:
+            facts.append(f"Distancia de snap inicial: {start_snap_m:.1f} m.")
+        if end_snap_m is not None:
+            facts.append(f"Distancia de snap final: {end_snap_m:.1f} m.")
+    else:
+        facts.append(f"spatial.route_cost no encontró ruta en la capa '{layer}'.")
+        if reason:
+            facts.append(f"Motivo: {reason}.")
+
+    return facts
+
+
 def _extract_intersects_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
     data = step_output.get("data") or {}
     features = data.get("features") or data.get("items") or data.get("results") or []
@@ -280,22 +396,24 @@ def _extract_intersects_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
 
 def _extract_query_layer_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
     data = step_output.get("data") or {}
-    features = data.get("features") or data.get("items") or data.get("results") or []
+    items = data.get("items") or data.get("features") or data.get("results") or []
     total = data.get("count_total")
     if total is None:
         total = data.get("count")
     if total is None:
-        total = len(features)
+        total = len(items)
 
     sample = []
-    for feat in features[:10]:
-        centroid = feat.get("centroid")
+    for feat in items[:10]:
+        lon = feat.get("lon")
+        lat = feat.get("lat")
         sample.append(
             {
                 "id": feat.get("id"),
                 "name": feat.get("name"),
-                "geometry_type": feat.get("geometry_type") or feat.get("geom_type"),
-                "centroid": centroid,
+                "geom_type": feat.get("geom_type") or feat.get("geometry_type"),
+                "lon": lon,
+                "lat": lat,
                 "length_m": feat.get("length_m"),
                 "area_m2": feat.get("area_m2"),
             }
@@ -311,29 +429,39 @@ def _extract_query_layer_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
 
 def _extract_nearby_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
     data = step_output.get("data") or {}
-    features = data.get("features") or data.get("items") or data.get("results") or []
+    items = data.get("items") or data.get("features") or data.get("results") or []
     total = data.get("count_total")
     if total is None:
         total = data.get("count")
     if total is None:
-        total = len(features)
+        total = len(items)
 
     sample = []
-    for feat in features[:10]:
+    for feat in items[:10]:
         sample.append(
             {
                 "id": feat.get("id"),
                 "name": feat.get("name"),
                 "distance_m": feat.get("distance_m"),
-                "geometry_type": feat.get("geometry_type") or feat.get("geom_type"),
+                "geom_type": feat.get("geom_type") or feat.get("geometry_type"),
             }
         )
+
+    closest = None
+    if items:
+        f = items[0]
+        closest = {
+            "name": f.get("name") or str(f.get("id", "")),
+            "distance_m": f.get("distance_m"),
+        }
 
     return {
         "tool": "spatial.nearby",
         "layer": data.get("layer"),
+        "radius_m": data.get("radius_m"),
         "point": data.get("point"),
         "total_features": total,
+        "closest": closest,
         "sample": sample,
     }
 
@@ -411,6 +539,76 @@ def _extract_network_trace_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _extract_aggregate_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    groups = data.get("groups") or []
+    group_by = data.get("group_by") or []
+    aggs = data.get("aggs") or []
+
+    top_group = None
+    if groups:
+        g = groups[0]
+        top_group = {k: g.get(k) for k in group_by if k in g}
+        top_group["count"] = g.get("count")
+        for a in aggs:
+            alias = a.get("alias") or f"{a.get('func')}_{a.get('field')}"
+            if alias in g:
+                top_group[alias] = g[alias]
+
+    return {
+        "tool": "spatial.aggregate",
+        "layer": data.get("layer"),
+        "group_by": group_by,
+        "aggs": [{"func": a.get("func"), "field": a.get("field")} for a in aggs],
+        "total_groups": data.get("total_groups", len(groups)),
+        "top_group": top_group,
+        "groups_sample": groups[:10],
+    }
+
+
+def _extract_buffer_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    items = data.get("items") or []
+    source = data.get("source") or {}
+
+    closest = None
+    if items:
+        f = items[0]
+        closest = {
+            "name": f.get("name") or str(f.get("id", "")),
+            "distance_m": f.get("distance_m"),
+        }
+
+    return {
+        "tool": "spatial.buffer",
+        "target_layer": data.get("target_layer"),
+        "buffer_m": data.get("buffer_m"),
+        "source": source,
+        "count_total": data.get("count_total", 0),
+        "closest": closest,
+        "items_sample": items[:10],
+    }
+
+
+def _extract_route_cost_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    path_found = bool(data.get("path_found"))
+    segment_ids = data.get("segment_ids") or []
+
+    return {
+        "tool": "spatial.route_cost",
+        "layer": data.get("layer"),
+        "metric": data.get("metric"),
+        "path_found": path_found,
+        "reason": data.get("reason"),
+        "total_cost": data.get("total_cost"),
+        "total_length_m": data.get("total_length_m"),
+        "segment_count": len(segment_ids),
+        "start_snap_m": data.get("start_snap_m"),
+        "end_snap_m": data.get("end_snap_m"),
+    }
+
+
 def extract_structured_facts(step_outputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     facts = []
 
@@ -431,6 +629,12 @@ def extract_structured_facts(step_outputs: List[Dict[str, Any]]) -> List[Dict[st
             facts.append(_extract_context_pack_facts(step))
         elif tool_name == "spatial.network_trace":
             facts.append(_extract_network_trace_facts(step))
+        elif tool_name == "spatial.aggregate":
+            facts.append(_extract_aggregate_facts(step))
+        elif tool_name == "spatial.buffer":
+            facts.append(_extract_buffer_facts(step))
+        elif tool_name == "spatial.route_cost":
+            facts.append(_extract_route_cost_facts(step))
 
     return facts
 
@@ -463,6 +667,12 @@ def build_tool_facts(step_outputs: List[Dict[str, Any]]) -> List[str]:
             facts.extend(_facts_from_query_layer(data))
         elif tool_name == "spatial.network_trace":
             facts.extend(_facts_from_network_trace(data))
+        elif tool_name == "spatial.aggregate":
+            facts.extend(_facts_from_aggregate(data))
+        elif tool_name == "spatial.buffer":
+            facts.extend(_facts_from_buffer(data))
+        elif tool_name == "spatial.route_cost":
+            facts.extend(_facts_from_route_cost(data))
         else:
             facts.append(f"La tool '{tool_name}' se ejecutó correctamente.")
 

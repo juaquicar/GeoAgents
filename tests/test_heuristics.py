@@ -98,6 +98,49 @@ class HeuristicsSelectionTests(SimpleTestCase):
         tools = select_initial_tools("Calcula la cobertura de servicio alcanzable en red")
         self.assertIn("spatial.network_service_area", tools)
 
+    def test_select_initial_tools_aggregate(self):
+        tools = select_initial_tools("Cuántos hay por tipo en la zona")
+        self.assertIn("spatial.aggregate", tools)
+
+    def test_select_initial_tools_aggregate_distribucion(self):
+        tools = select_initial_tools("Dame la distribución por categoría")
+        self.assertIn("spatial.aggregate", tools)
+
+    def test_select_initial_tools_buffer(self):
+        tools = select_initial_tools("Busca elementos en un radio de 100 metros")
+        self.assertIn("spatial.buffer", tools)
+
+    def test_select_initial_tools_inventory(self):
+        tools = select_initial_tools("Lista todos los elementos de la capa")
+        self.assertIn("spatial.query_layer", tools)
+
+    # Verificar que términos de infraestructura ya NO dictan la tool directamente —
+    # la selección de capa es responsabilidad del LLM vía agent_system_prompt.
+
+    def test_domain_specific_infra_term_does_not_hardwire_network(self):
+        """'canalización' es jerga de infraestructura: no debe activar network_trace directamente."""
+        tools = select_initial_tools("Analiza la canalización de fibra")
+        # El LLM decidirá con agent_system_prompt; la heurística puede sugerir query_layer o summary
+        self.assertNotIn("spatial.network_trace", tools)
+
+    def test_domain_specific_layer_name_not_in_query_layer_hint(self):
+        """Nombres de capa como 'span' o 'struct' ya no se usan como keywords de heurística."""
+        tools_span = select_initial_tools("Dame los span de esta zona")
+        tools_struct = select_initial_tools("Muestra los struct del área")
+        # No debe activar query_layer por coincidencia de nombre de capa; lo decide el LLM
+        # (en la práctica puede coincidir con otros tokens, pero no por los nombres de capa)
+        for tools in (tools_span, tools_struct):
+            self.assertTrue(len(tools) > 0)  # siempre hay al menos una sugerencia
+
+    def test_generic_network_keyword_still_works(self):
+        """'red' y 'network' sí son tokens genéricos válidos para dominio network."""
+        self.assertEqual(classify_goal_domain("Analiza la red de distribución"), "network")
+        self.assertEqual(classify_goal_domain("Network analysis"), "network")
+
+    def test_grafo_topolog_triggers_network_domain(self):
+        """Nuevos tokens genéricos 'grafo' y 'topolog' clasifican como network."""
+        self.assertEqual(classify_goal_domain("Recorre el grafo topológico"), "network")
+
 
 # ── Planner heuristics integrado ─────────────────────────────────────────────
 

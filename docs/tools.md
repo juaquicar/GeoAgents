@@ -315,6 +315,112 @@ Calcula alcance de servicio real sobre topología de red desde un origen.
 
 ---
 
+## spatial.aggregate
+
+Agrupa elementos de una capa por uno o más campos y calcula estadísticas por grupo.
+
+### Capacidades
+
+* recuento por grupo (`COUNT(*)`)
+* estadísticas opcionales (`SUM`, `AVG`, `MIN`, `MAX`) sobre campos numéricos
+* filtros de atributo y filtro espacial por `bbox`
+* hasta 4 campos en `group_by`
+* ordenación por recuento o por un agregado
+
+### Cuándo usarla
+
+* "¿cuántos elementos hay por tipo/categoría?"
+* "¿qué tipo predomina en esta zona?"
+* "suma del campo X por grupo"
+* distribuciones estadísticas de una capa
+
+### Input
+
+```json
+{
+  "layer": "demo_lines",
+  "group_by": ["category_n", "type_name"],
+  "aggs": [
+    {"field": "length_m", "func": "sum", "alias": "longitud_total"}
+  ],
+  "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33},
+  "order_by": "count_desc",
+  "limit": 50
+}
+```
+
+### Output
+
+```json
+{
+  "layer": "demo_lines",
+  "group_by": ["category_n", "type_name"],
+  "total_groups": 5,
+  "groups": [
+    {"category_n": "Fiber", "type_name": "buried", "count": 42, "longitud_total": 3820.5}
+  ]
+}
+```
+
+---
+
+## spatial.buffer
+
+Encuentra elementos de una capa (`target_layer`) dentro de un radio (`buffer_m`) alrededor de una geometría fuente.
+
+A diferencia de `spatial.nearby` (solo punto), la fuente puede ser cualquier geometría de capa (línea, polígono…).
+
+### Capacidades
+
+* búsqueda dentro de radio métrico exacto (`ST_DWithin` con geography)
+* fuente puntual (`source_point`) o elemento de capa (`source_layer + source_id`)
+* resultados ordenados por `distance_m` ascendente
+* filtros de atributo y `bbox` opcionales
+
+### Cuándo usarla
+
+* "elementos a X metros de este tramo/parcela/estructura"
+* la fuente es una geometría no puntual (línea, polígono)
+* "influencia espacial de un elemento concreto"
+
+### Input
+
+```json
+{
+  "target_layer": "demo_points",
+  "buffer_m": 100,
+  "source_layer": "demo_lines",
+  "source_id": 5,
+  "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33}
+}
+```
+
+También admite fuente puntual:
+
+```json
+{
+  "target_layer": "demo_points",
+  "buffer_m": 50,
+  "source_point": {"lon": -6.055, "lat": 37.325}
+}
+```
+
+### Output
+
+```json
+{
+  "target_layer": "demo_points",
+  "source": {"type": "layer_element", "layer": "demo_lines", "id": 5},
+  "buffer_m": 100,
+  "count_total": 3,
+  "items": [
+    {"id": 1, "name": "A", "distance_m": 12.3, "lon": -6.054, "lat": 37.324}
+  ]
+}
+```
+
+---
+
 
 # Tools y verificación
 
@@ -353,7 +459,7 @@ Las tools pueden consumir outputs de pasos previos mediante referencias.
 
 Ejemplo:
 
-```json id="b68fuf"
+```json
 {
   "id": "s2",
   "type": "tool",
@@ -361,11 +467,18 @@ Ejemplo:
   "depends_on": ["s1"],
   "args": {
     "layer": "demo_points",
-    "point": "$step:s1.data.features.0.centroid",
+    "point": {
+      "lon": "$step:s1.data.items.0.lon",
+      "lat": "$step:s1.data.items.0.lat"
+    },
     "radius_m": 100
   }
 }
 ```
+
+Nota: `spatial.query_layer` devuelve los resultados en `data.items` (no `data.features`).
+Cada item incluye `lon` y `lat` como campos top-level (centroide del elemento).
+Usa siempre `$step:s1.data.items.0.lon` / `.lat`, nunca `$step:s1.data.items.0.centroid`.
 
 Esto hace posible el razonamiento multi-tool real.
 
@@ -418,5 +531,6 @@ tools_network_trace.py
 
 Evoluciones naturales previstas:
 
-* `spatial.cluster`
-* `spatial.visibility`
+* `spatial.cluster` — agrupación espacial (DBSCAN, k-means)
+* `spatial.visibility` — análisis de visibilidad / cuencas visuales
+* `spatial.dissolve` — unión de geometrías por campo
