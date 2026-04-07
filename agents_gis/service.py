@@ -93,10 +93,15 @@ def get_gis_connection(layer_cfg: dict = None):
 
     close_old_connections()
     conn = connections[alias]
+    # Django 6 requiere PG≥14, pero las BDs GIS de agentes pueden ser versiones
+    # anteriores (ej. PG 10). Silenciamos el check de versión solo en esta
+    # conexión de instancia; no afecta a ninguna otra conexión del proceso.
+    conn.check_database_version_supported = lambda: None
     try:
         conn.ensure_connection()
     except Exception:
         conn.close()
+        conn.check_database_version_supported = lambda: None
         conn.ensure_connection()
     return conn
 
