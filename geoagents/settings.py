@@ -111,6 +111,8 @@ if _gis_remote_host:
         "HOST": _gis_remote_host,
         "PORT": os.getenv("GIS_REMOTE_DB_PORT", "5432"),
         "ATOMIC_REQUESTS": False,
+        # En tests no se crea BD separada para gis_remote; se usa 'default'
+        "TEST": {"MIRROR": "default"},
     }
     _gis_sslmode = os.getenv("GIS_REMOTE_DB_SSLMODE", "")
     if _gis_sslmode:

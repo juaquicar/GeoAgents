@@ -2,6 +2,7 @@
 Lógica de introspección GIS reutilizable.
 Se usa al guardar un Agente (auto-inspect) y desde el management command.
 """
+import psycopg2
 from django.db import connections, close_old_connections
 
 # Tipos de geometría PostGIS → geometry_kind
@@ -81,7 +82,6 @@ def _inspect_columns(cursor, schema: str, table: str) -> list:
 
 def _psycopg2_connect(conn_cfg: dict):
     """Abre una conexión psycopg2 directa (sin Django) a partir del dict de conexión."""
-    import psycopg2
     params = {
         "host":     conn_cfg.get("host", ""),
         "port":     int(conn_cfg.get("port", 5432)),

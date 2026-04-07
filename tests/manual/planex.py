@@ -68,6 +68,66 @@ from agents_core.runner import execute_run       # noqa: E402
 
 
 # -----------------------------------------------------------------------------
+# Conexión y catálogo hardcodeados (modelo per-agent)
+# Edita GIS_DB_CONNECTION si cambian los datos de acceso a la BD Planex.
+# -----------------------------------------------------------------------------
+GIS_DB_CONNECTION = {
+    "host": "82.223.78.166",
+    "port": 5432,
+    "db_name": "tesa",
+    "user": "postgres",
+    "password": "",
+    "schema": "planex",
+    "alias": "planex",
+}
+
+PLANEX_CATALOG = [
+    {
+        "name": "span",
+        "table": "span",
+        "schema": "planex",
+        "geom_col": "the_geom",
+        "id_col": "fid",
+        "geometry_kind": "line",
+        "srid": 25830,
+        "geom_type": "MULTILINESTRING",
+        "fields": [
+            "span_name", "category_n", "type_name", "span_ref_n",
+            "to_structu", "from_struc", "calculated", "measured_l",
+            "ducts_avai", "te_tipo_ca", "te_num_cab", "te_propiet",
+            "length", "ownership_",
+        ],
+        "filter_fields": [
+            "span_name", "category_n", "type_name", "span_ref_n",
+            "to_structu", "from_struc", "calculated", "measured_l",
+            "ducts_avai", "te_tipo_ca", "te_num_cab", "te_propiet",
+            "length", "ownership_",
+        ],
+    },
+    {
+        "name": "struct",
+        "table": "struct",
+        "schema": "planex",
+        "geom_col": "the_geom",
+        "id_col": "fid",
+        "geometry_kind": "point",
+        "srid": 25830,
+        "geom_type": "MULTIPOINT",
+        "fields": [
+            "structure_", "category_n", "type_name", "location_c",
+            "ownership_", "te_capacid", "te_nro_lin", "te_nombre",
+            "te_tipo", "te_zona", "te_ciudad", "te_propiet",
+        ],
+        "filter_fields": [
+            "structure_", "category_n", "type_name", "location_c",
+            "ownership_", "te_capacid", "te_nro_lin", "te_nombre",
+            "te_tipo", "te_zona", "te_ciudad", "te_propiet",
+        ],
+    },
+]
+
+
+# -----------------------------------------------------------------------------
 # BBoxes de zonas de infraestructura Planex (WGS84 lon/lat)
 # Los datos están en SRID 25830; las tools reproyectan automáticamente.
 # Ajusta las coordenadas a la zona real de tu BD si difieren.
@@ -614,6 +674,8 @@ def get_or_create_agent(profile: str, *, network: bool = False) -> Agent:
             "is_active": True,
             "tool_allowlist": allowlist,
             "profile": profile,
+            "gis_db_connections": [GIS_DB_CONNECTION],
+            "gis_layers_catalog": PLANEX_CATALOG,
         },
     )
 
@@ -626,6 +688,12 @@ def get_or_create_agent(profile: str, *, network: bool = False) -> Agent:
         changed = True
     if not agent.is_active:
         agent.is_active = True
+        changed = True
+    if agent.gis_db_connections != [GIS_DB_CONNECTION]:
+        agent.gis_db_connections = [GIS_DB_CONNECTION]
+        changed = True
+    if agent.gis_layers_catalog != PLANEX_CATALOG:
+        agent.gis_layers_catalog = PLANEX_CATALOG
         changed = True
     if changed:
         agent.save()

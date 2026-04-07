@@ -1,3 +1,9 @@
+"""
+Tests del sintetizador LLM: extracción de hechos estructurados desde outputs de tools.
+
+Ejecutar:
+    python manage.py test tests.test_llm_synthesizer
+"""
 from django.test import SimpleTestCase
 
 from agents_llm.synthesizer import extract_structured_facts
@@ -15,21 +21,12 @@ class SynthesizerFactsExtractionTests(SimpleTestCase):
                     "source_layer": "demo_points",
                     "target_layer": "demo_polygons",
                     "items": [
-                        {
-                            "source_name": "A",
-                            "target_name": "Zona 1",
-                            "intersection_geom_type": "POINT",
-                        },
-                        {
-                            "source_name": "B",
-                            "target_name": "Zona 1",
-                            "intersection_geom_type": "POINT",
-                        },
+                        {"source_name": "A", "target_name": "Zona 1", "intersection_geom_type": "POINT"},
+                        {"source_name": "B", "target_name": "Zona 1", "intersection_geom_type": "POINT"},
                     ],
                 },
             }
         ]
-
         facts = extract_structured_facts(executed_outputs)
         self.assertEqual(len(facts), 1)
         self.assertEqual(facts[0]["tool"], "spatial.intersects")
@@ -51,7 +48,6 @@ class SynthesizerFactsExtractionTests(SimpleTestCase):
                 },
             }
         ]
-
         facts = extract_structured_facts(executed_outputs)
         self.assertEqual(len(facts), 1)
         self.assertEqual(facts[0]["tool"], "spatial.network_trace")
@@ -75,7 +71,6 @@ class SynthesizerFactsExtractionTests(SimpleTestCase):
                 },
             }
         ]
-
         facts = extract_structured_facts(executed_outputs)
         self.assertEqual(len(facts), 1)
         self.assertEqual(facts[0]["tool"], "spatial.query_layer")

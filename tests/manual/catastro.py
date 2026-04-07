@@ -19,6 +19,57 @@ from agents_core.runner import execute_run       # noqa: E402
 
 
 # -----------------------------------------------------------------------------
+# Conexión y catálogo hardcodeados (modelo per-agent)
+# TODO: rellena los datos de acceso a la BD del catastro español.
+# -----------------------------------------------------------------------------
+GIS_DB_CONNECTION = {
+    "host": "",          # ej. "82.223.78.166"
+    "port": 5432,
+    "db_name": "",       # ej. "catastro"
+    "user": "",          # ej. "postgres"
+    "password": "",
+    "schema": "public",  # ajusta si el schema no es public
+    "alias": "catastro",
+}
+
+CATASTRO_CATALOG = [
+    {
+        "name": "addresses",
+        "table": "addresses",
+        "schema": GIS_DB_CONNECTION["schema"],
+        "geom_col": "the_geom",
+        "id_col": "gid",
+        "geometry_kind": "point",
+        "srid": 4326,
+        "fields": ["designator", "locator_designator", "thoroughfare_name", "postal_code", "admin_unit"],
+        "filter_fields": ["designator", "locator_designator", "thoroughfare_name", "postal_code"],
+    },
+    {
+        "name": "buildings",
+        "table": "buildings",
+        "schema": GIS_DB_CONNECTION["schema"],
+        "geom_col": "the_geom",
+        "id_col": "gid",
+        "geometry_kind": "polygon",
+        "srid": 4326,
+        "fields": ["localid", "currentuse", "numberoffloors", "numberofbuildingunit", "conditionofconstruction", "beginning"],
+        "filter_fields": ["localid", "currentuse", "numberoffloors", "numberofbuildingunit", "conditionofconstruction"],
+    },
+    {
+        "name": "cadastralparcels",
+        "table": "cadastralparcels",
+        "schema": GIS_DB_CONNECTION["schema"],
+        "geom_col": "the_geom",
+        "id_col": "gid",
+        "geometry_kind": "polygon",
+        "srid": 4326,
+        "fields": ["nationalcadastralreference", "areavalue", "label"],
+        "filter_fields": ["nationalcadastralreference", "areavalue", "label"],
+    },
+]
+
+
+# -----------------------------------------------------------------------------
 # BBoxes reales del catastro español
 # -----------------------------------------------------------------------------
 BBOX_MADRID = {"west": -3.710, "south": 40.413, "east": -3.695, "north": 40.423}
@@ -399,6 +450,8 @@ def get_or_create_agent(profile: str, *, network: bool = False) -> Agent:
             "is_active": True,
             "tool_allowlist": allowlist,
             "profile": profile,
+            "gis_db_connections": [GIS_DB_CONNECTION],
+            "gis_layers_catalog": CATASTRO_CATALOG,
         },
     )
 
@@ -411,6 +464,12 @@ def get_or_create_agent(profile: str, *, network: bool = False) -> Agent:
         changed = True
     if not agent.is_active:
         agent.is_active = True
+        changed = True
+    if agent.gis_db_connections != [GIS_DB_CONNECTION]:
+        agent.gis_db_connections = [GIS_DB_CONNECTION]
+        changed = True
+    if agent.gis_layers_catalog != CATASTRO_CATALOG:
+        agent.gis_layers_catalog = CATASTRO_CATALOG
         changed = True
     if changed:
         agent.save()

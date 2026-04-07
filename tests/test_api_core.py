@@ -1,14 +1,19 @@
+"""
+Tests de API REST para agents_core: agentes, runs, steps, trace, memoria y episodios.
+
+Ejecutar:
+    python manage.py test tests.test_api_core
+"""
 from types import SimpleNamespace
 from unittest.mock import patch
-from types import SimpleNamespace
 
-from agents_core.runner import execute_run
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from agents_core.models import Agent, Episode, Run, RunMemory, RunStep
+from agents_core.runner import execute_run
 
 
 def _tool_ok(data):
@@ -33,6 +38,7 @@ class AgentsCoreApiTests(APITestCase):
         self.token = Token.objects.create(user=self.user)
         self.other_token = Token.objects.create(user=self.other_user)
 
+        # Agente sin gis_db_connections (los tests de core no necesitan GIS remoto)
         self.agent = Agent.objects.create(
             name="api-agent",
             profile="investigate",
@@ -45,25 +51,20 @@ class AgentsCoreApiTests(APITestCase):
 
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
 
+    # ── Autenticación ────────────────────────────────────────────────────────
+
     def test_runs_endpoint_requires_authentication(self):
         self.client.credentials()
         url = reverse("runs-list")
-
         response = self.client.get(url)
-
         self.assertIn(response.status_code, (401, 403))
+
+    # ── Creación y listado ───────────────────────────────────────────────────
 
     def test_create_run_assigns_authenticated_user(self):
         url = reverse("runs-list")
-        payload = {
-            "agent": self.agent.id,
-            "input_json": {
-                "goal": "consulta simple",
-            },
-        }
-
+        payload = {"agent": self.agent.id, "input_json": {"goal": "consulta simple"}}
         response = self.client.post(url, payload, format="json")
-
         self.assertEqual(response.status_code, 201)
         run = Run.objects.get(id=response.data["id"])
         self.assertEqual(run.user_id, self.user.id)
@@ -71,33 +72,20 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(run.status, "queued")
 
     def test_runs_list_only_returns_current_user_runs(self):
-        own_run = Run.objects.create(
-            agent=self.agent,
-            user=self.user,
-            input_json={"goal": "run propio"},
-        )
-        Run.objects.create(
-            agent=self.agent,
-            user=self.other_user,
-            input_json={"goal": "run ajeno"},
-        )
-
+        own_run = Run.objects.create(agent=self.agent, user=self.user, input_json={"goal": "run propio"})
+        Run.objects.create(agent=self.agent, user=self.other_user, input_json={"goal": "run ajeno"})
         url = reverse("runs-list")
         response = self.client.get(url)
-
         self.assertEqual(response.status_code, 200)
         ids = [item["id"] for item in response.data]
         self.assertIn(own_run.id, ids)
         self.assertEqual(len(ids), 1)
 
+    # ── Execute ──────────────────────────────────────────────────────────────
+
     @patch("agents_core.views.execute_run")
     def test_execute_action_runs_and_returns_enriched_run(self, mock_execute_run):
-        run = Run.objects.create(
-            agent=self.agent,
-            user=self.user,
-            input_json={"goal": "ejecuta este run"},
-        )
-
+        run = Run.objects.create(agent=self.agent, user=self.user, input_json={"goal": "ejecuta este run"})
         run.status = "succeeded"
         run.final_text = "respuesta final"
         run.output_json = {
@@ -162,50 +150,22 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(step["depends_on"], [])
         self.assertEqual(step["resolved_args"], {})
         self.assertEqual(step["verification"]["status"], "not_evaluated")
-        self.assertEqual(
-            step["verification"]["reason"],
-            "No success_criteria provided.",
-        )
+        self.assertEqual(step["verification"]["reason"], "No success_criteria provided.")
 
     def test_execute_action_cannot_access_other_user_run(self):
-        foreign_run = Run.objects.create(
-            agent=self.agent,
-            user=self.other_user,
-            input_json={"goal": "run ajeno"},
-        )
-
+        foreign_run = Run.objects.create(agent=self.agent, user=self.other_user, input_json={"goal": "run ajeno"})
         url = reverse("runs-execute", kwargs={"pk": foreign_run.id})
         response = self.client.post(url, {}, format="json")
-
         self.assertEqual(response.status_code, 404)
 
-    def test_steps_action_returns_persisted_steps(self):
-        run = Run.objects.create(
-            agent=self.agent,
-            user=self.user,
-            input_json={"goal": "ver steps"},
-        )
+    # ── Steps ────────────────────────────────────────────────────────────────
 
-        RunStep.objects.create(
-            run=run,
-            idx=0,
-            kind="system",
-            name="run.start",
-            input_json={"a": 1},
-            output_json={"status": "running"},
-            latency_ms=0,
-            error="",
-        )
-        RunStep.objects.create(
-            run=run,
-            idx=1,
-            kind="result",
-            name="planner.result",
-            input_json={"goal": "ver steps"},
-            output_json={"ok": True},
-            latency_ms=12,
-            error="",
-        )
+    def test_steps_action_returns_persisted_steps(self):
+        run = Run.objects.create(agent=self.agent, user=self.user, input_json={"goal": "ver steps"})
+        RunStep.objects.create(run=run, idx=0, kind="system", name="run.start",
+                               input_json={"a": 1}, output_json={"status": "running"}, latency_ms=0, error="")
+        RunStep.objects.create(run=run, idx=1, kind="result", name="planner.result",
+                               input_json={"goal": "ver steps"}, output_json={"ok": True}, latency_ms=12, error="")
 
         url = reverse("runs-steps", kwargs={"pk": run.id})
         response = self.client.get(url)
@@ -218,16 +178,12 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(response.data[1]["name"], "planner.result")
 
     def test_steps_action_cannot_access_other_user_run(self):
-        foreign_run = Run.objects.create(
-            agent=self.agent,
-            user=self.other_user,
-            input_json={"goal": "run ajeno"},
-        )
-
+        foreign_run = Run.objects.create(agent=self.agent, user=self.other_user, input_json={"goal": "run ajeno"})
         url = reverse("runs-steps", kwargs={"pk": foreign_run.id})
         response = self.client.get(url)
-
         self.assertEqual(response.status_code, 404)
+
+    # ── Trace ────────────────────────────────────────────────────────────────
 
     def test_trace_action_returns_trace_payload(self):
         run = Run.objects.create(
@@ -253,11 +209,7 @@ class AgentsCoreApiTests(APITestCase):
                     {
                         "label": "initial",
                         "steps": [
-                            {
-                                "id": "s1",
-                                "type": "tool",
-                                "name": "spatial.network_trace",
-                            },
+                            {"id": "s1", "type": "tool", "name": "spatial.network_trace"},
                             {"type": "final"},
                         ],
                     }
@@ -297,27 +249,12 @@ class AgentsCoreApiTests(APITestCase):
             },
             final_text="Se encontró una ruta válida.",
         )
-
-        RunStep.objects.create(
-            run=run,
-            idx=0,
-            kind="system",
-            name="run.start",
-            input_json={},
-            output_json={"status": "running"},
-            latency_ms=0,
-            error="",
-        )
-        RunStep.objects.create(
-            run=run,
-            idx=1,
-            kind="llm",
-            name="llm.plan",
-            input_json={"goal": "inspeccionar trace"},
-            output_json={"steps": [{"id": "s1", "type": "tool"}, {"type": "final"}]},
-            latency_ms=0,
-            error="",
-        )
+        RunStep.objects.create(run=run, idx=0, kind="system", name="run.start",
+                               input_json={}, output_json={"status": "running"}, latency_ms=0, error="")
+        RunStep.objects.create(run=run, idx=1, kind="llm", name="llm.plan",
+                               input_json={"goal": "inspeccionar trace"},
+                               output_json={"steps": [{"id": "s1", "type": "tool"}, {"type": "final"}]},
+                               latency_ms=0, error="")
 
         url = reverse("runs-trace", kwargs={"pk": run.id})
         response = self.client.get(url)
@@ -330,18 +267,9 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(len(response.data["steps"]), 2)
         self.assertEqual(response.data["trace"]["goal"], "inspeccionar trace")
         self.assertEqual(response.data["trace"]["replan_count"], 1)
-        self.assertEqual(
-            response.data["trace"]["verification_summary"]["counts"]["verified"],
-            1,
-        )
-        self.assertEqual(
-            response.data["trace"]["stats"]["tool_steps_executed"],
-            1,
-        )
-        self.assertEqual(
-            response.data["trace"]["stats"]["total_attempts"],
-            2,
-        )
+        self.assertEqual(response.data["trace"]["verification_summary"]["counts"]["verified"], 1)
+        self.assertEqual(response.data["trace"]["stats"]["tool_steps_executed"], 1)
+        self.assertEqual(response.data["trace"]["stats"]["total_attempts"], 2)
 
         verified_item = response.data["trace"]["verification_summary"]["verified"][0]
         self.assertIn("depends_on", verified_item)
@@ -350,10 +278,7 @@ class AgentsCoreApiTests(APITestCase):
         self.assertIn("reason", verified_item)
         self.assertEqual(verified_item["depends_on"], [])
         self.assertEqual(verified_item["attempt_count"], 2)
-        self.assertEqual(
-            verified_item["reason"],
-            "Evaluated equals on path 'data.path_found'.",
-        )
+        self.assertEqual(verified_item["reason"], "Evaluated equals on path 'data.path_found'.")
 
         trace_step = response.data["trace"]["executed_outputs"][0]
         self.assertEqual(trace_step["depends_on"], [])
@@ -361,22 +286,15 @@ class AgentsCoreApiTests(APITestCase):
         self.assertIn("attempt_count", trace_step)
         self.assertEqual(trace_step["attempt_count"], 2)
         self.assertEqual(trace_step["verification"]["status"], "verified")
-        self.assertEqual(
-            trace_step["verification"]["reason"],
-            "Evaluated equals on path 'data.path_found'.",
-        )
+        self.assertEqual(trace_step["verification"]["reason"], "Evaluated equals on path 'data.path_found'.")
 
     def test_trace_action_cannot_access_other_user_run(self):
-        foreign_run = Run.objects.create(
-            agent=self.agent,
-            user=self.other_user,
-            input_json={"goal": "run ajeno"},
-        )
-
+        foreign_run = Run.objects.create(agent=self.agent, user=self.other_user, input_json={"goal": "run ajeno"})
         url = reverse("runs-trace", kwargs={"pk": foreign_run.id})
         response = self.client.get(url)
-
         self.assertEqual(response.status_code, 404)
+
+    # ── Serializer normalization ─────────────────────────────────────────────
 
     def test_run_serializer_normalizes_contract_defaults(self):
         run = Run.objects.create(
@@ -389,22 +307,14 @@ class AgentsCoreApiTests(APITestCase):
                 "plan_history": [],
                 "replan_count": 0,
                 "executed_outputs": [
-                    {
-                        "id": "s1",
-                        "type": "tool",
-                        "name": "spatial.query_layer",
-                        "ok": True,
-                    }
+                    {"id": "s1", "type": "tool", "name": "spatial.query_layer", "ok": True}
                 ],
             },
         )
-
         url = reverse("runs-detail", kwargs={"pk": run.id})
         response = self.client.get(url)
-
         self.assertEqual(response.status_code, 200)
         step = response.data["executed_outputs"][0]
-
         self.assertEqual(step["attempt_count"], 0)
         self.assertEqual(step["depends_on"], [])
         self.assertEqual(step["resolved_args"], {})
@@ -425,19 +335,12 @@ class AgentsCoreApiTests(APITestCase):
                 "plan_history": [],
                 "replan_count": 0,
                 "executed_outputs": [
-                    {
-                        "id": "s1",
-                        "type": "tool",
-                        "name": "spatial.query_layer",
-                        "ok": True,
-                    }
+                    {"id": "s1", "type": "tool", "name": "spatial.query_layer", "ok": True}
                 ],
             },
         )
-
         url = reverse("runs-trace", kwargs={"pk": run.id})
         response = self.client.get(url)
-
         self.assertEqual(response.status_code, 200)
 
         trace_step = response.data["trace"]["executed_outputs"][0]
@@ -452,25 +355,22 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(verification_item["resolved_args"], {})
         self.assertEqual(verification_item["attempt_count"], 0)
         self.assertEqual(verification_item["reason"], "")
-
         self.assertEqual(response.data["trace"]["replan_count"], 0)
         self.assertEqual(response.data["trace"]["plan_history"], [])
+
+    # ── Flujo completo con mocks ─────────────────────────────────────────────
 
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
     @patch("agents_core.runner.synthesize_run", return_value="síntesis desde API")
     def test_full_execute_flow_persists_steps_and_trace_is_visible(
-        self,
-        _mock_synthesize_run,
-        mock_plan_run,
-        mock_invoke_tool,
+        self, _mock_synthesize_run, mock_plan_run, mock_invoke_tool
     ):
         run = Run.objects.create(
             agent=self.agent,
             user=self.user,
             input_json={"goal": "ejecución completa API"},
         )
-
         mock_plan_run.return_value = {
             "steps": [
                 {
@@ -483,15 +383,11 @@ class AgentsCoreApiTests(APITestCase):
                         "end_point": {"lon": -6.056, "lat": 37.326},
                     },
                     "required": True,
-                    "success_criteria": {
-                        "path": "data.path_found",
-                        "equals": True,
-                    },
+                    "success_criteria": {"path": "data.path_found", "equals": True},
                 },
                 {"type": "final"},
             ]
         }
-
         mock_invoke_tool.return_value = (
             _tool_ok({"path_found": True, "segments": [{"name": "seg-1"}]}),
             10,
@@ -502,10 +398,7 @@ class AgentsCoreApiTests(APITestCase):
 
         self.assertEqual(execute_response.status_code, 200)
         self.assertEqual(execute_response.data["status"], "succeeded")
-        self.assertEqual(
-            execute_response.data["verification_summary"]["counts"]["verified"],
-            1,
-        )
+        self.assertEqual(execute_response.data["verification_summary"]["counts"]["verified"], 1)
 
         execute_step = execute_response.data["executed_outputs"][0]
         self.assertIn("attempt_count", execute_step)
@@ -514,10 +407,7 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(execute_step["attempt_count"], 1)
         self.assertEqual(execute_step["depends_on"], [])
         self.assertEqual(execute_step["verification"]["status"], "verified")
-        self.assertEqual(
-            execute_step["verification"]["reason"],
-            "Evaluated equals on path 'data.path_found'.",
-        )
+        self.assertEqual(execute_step["verification"]["reason"], "Evaluated equals on path 'data.path_found'.")
 
         trace_url = reverse("runs-trace", kwargs={"pk": run.id})
         trace_response = self.client.get(trace_url)
@@ -525,19 +415,15 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(trace_response.status_code, 200)
         self.assertGreaterEqual(len(trace_response.data["steps"]), 4)
         self.assertEqual(trace_response.data["trace"]["stats"]["tool_steps_executed"], 1)
-        self.assertEqual(
-            trace_response.data["trace"]["verification_summary"]["counts"]["verified"],
-            1,
-        )
+        self.assertEqual(trace_response.data["trace"]["verification_summary"]["counts"]["verified"], 1)
 
         verified_item = trace_response.data["trace"]["verification_summary"]["verified"][0]
         self.assertEqual(verified_item["attempt_count"], 1)
         self.assertEqual(verified_item["depends_on"], [])
         self.assertIn("resolved_args", verified_item)
-        self.assertEqual(
-            verified_item["reason"],
-            "Evaluated equals on path 'data.path_found'.",
-        )
+        self.assertEqual(verified_item["reason"], "Evaluated equals on path 'data.path_found'.")
+
+    # ── Filtrado por memoria ─────────────────────────────────────────────────
 
     def test_runs_list_can_filter_by_persisted_memory_fields(self):
         run = Run.objects.create(
@@ -587,27 +473,22 @@ class AgentsCoreApiTests(APITestCase):
         )
 
         url = reverse("runs-list")
-        response = self.client.get(
-            url,
-            {
-                "tool": "spatial.network_trace",
-                "layer": "demo_lines",
-                "analysis_type": "network_trace",
-                "verification_status": "verified",
-                "domain": "network",
-            },
-        )
+        response = self.client.get(url, {
+            "tool": "spatial.network_trace",
+            "layer": "demo_lines",
+            "analysis_type": "network_trace",
+            "verification_status": "verified",
+            "domain": "network",
+        })
 
         self.assertEqual(response.status_code, 200)
         ids = [item["id"] for item in response.data]
         self.assertEqual(ids, [run.id])
 
+    # ── Memory y Episode en respuesta ────────────────────────────────────────
+
     def test_execute_response_includes_run_memory_and_episode(self):
-        run = Run.objects.create(
-            agent=self.agent,
-            user=self.user,
-            input_json={"goal": "ejecuta este run"},
-        )
+        run = Run.objects.create(agent=self.agent, user=self.user, input_json={"goal": "ejecuta este run"})
         run.status = "succeeded"
         run.final_text = "respuesta final"
         run.output_json = {
@@ -618,16 +499,8 @@ class AgentsCoreApiTests(APITestCase):
             "replan_count": 0,
             "executed_outputs": [],
             "verification_summary": {
-                "verified": [],
-                "refuted": [],
-                "inconclusive": [],
-                "not_evaluated": [],
-                "counts": {
-                    "verified": 0,
-                    "refuted": 0,
-                    "inconclusive": 0,
-                    "not_evaluated": 0,
-                },
+                "verified": [], "refuted": [], "inconclusive": [], "not_evaluated": [],
+                "counts": {"verified": 0, "refuted": 0, "inconclusive": 0, "not_evaluated": 0},
             },
         }
         run.save()
@@ -672,118 +545,89 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(response.data["run_memory"]["goal_signature"], "ejecuta|run")
         self.assertEqual(response.data["episode"]["outcome_status"], "succeeded")
 
+    # ── Flujo refutado (verificación fallida + replan) ────────────────────────
 
-@patch("agents_core.runner.synthesize_run", return_value="síntesis refutada")
-@patch("agents_core.runner.invoke_tool")
-@patch("agents_core.runner.plan_run")
-def test_full_execute_flow_persists_refuted_memory_and_episode(
-    self,
-    mock_plan_run,
-    mock_invoke_tool,
-    _mock_synthesize_run,
-):
-    run = Run.objects.create(
-        agent=self.agent,
-        user=self.user,
-        input_json={
-            "goal": "Traza una ruta de red entre dos puntos desconectados",
-            "map_context": {
-                "bbox": {
-                    "west": -6.06,
-                    "south": 37.32,
-                    "east": -6.05,
-                    "north": 37.33,
+    @patch("agents_core.runner.synthesize_run", return_value="síntesis refutada")
+    @patch("agents_core.runner.invoke_tool")
+    @patch("agents_core.runner.plan_run")
+    def test_full_execute_flow_persists_refuted_memory_and_episode(
+        self, mock_plan_run, mock_invoke_tool, _mock_synthesize_run
+    ):
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={
+                "goal": "Traza una ruta de red entre dos puntos desconectados",
+                "map_context": {
+                    "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33},
+                    "zoom": 18,
                 },
-                "zoom": 18,
-            },
-            "trace_context": {
-                "start_point": {"lon": -6.06, "lat": 37.3201},
-                "end_point": {"lon": -6.051, "lat": 37.3299},
-            },
-        },
-    )
-
-    # Primera planificación e intento inicial
-    initial_plan = {
-        "steps": [
-            {
-                "id": "s1",
-                "type": "tool",
-                "name": "spatial.network_trace",
-                "args": {
-                    "layer": "demo_lines",
+                "trace_context": {
                     "start_point": {"lon": -6.06, "lat": 37.3201},
                     "end_point": {"lon": -6.051, "lat": 37.3299},
-                    "bbox": {
-                        "west": -6.06,
-                        "south": 37.32,
-                        "east": -6.05,
-                        "north": 37.33,
-                    },
-                    "include_geom": True,
-                    "max_snap_distance_m": 250.0,
                 },
-                "required": True,
-                "on_fail": "continue",
-                "hypothesis": "Existe una ruta de red válida entre ambos puntos",
-                "verification_target": "Comprobar si path_found es true",
-                "success_criteria": {
-                    "path": "data.path_found",
-                    "equals": True,
-                },
-                "timeout_s": 0,
-                "max_retries": 1,
-                "retry_backoff_s": 0,
-                "can_replan": True,
-                "depends_on": [],
             },
-            {"type": "final"},
-        ]
-    }
+        )
 
-    # Replan: en este caso sigue proponiendo el mismo tool, pero queda registrado
-    replanned = {
-        "steps": [
-            {
-                "id": "s1",
-                "type": "tool",
-                "name": "spatial.network_trace",
-                "args": {
-                    "layer": "demo_lines",
-                    "start_point": {"lon": -6.06, "lat": 37.3201},
-                    "end_point": {"lon": -6.051, "lat": 37.3299},
-                    "bbox": {
-                        "west": -6.06,
-                        "south": 37.32,
-                        "east": -6.05,
-                        "north": 37.33,
+        initial_plan = {
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "tool",
+                    "name": "spatial.network_trace",
+                    "args": {
+                        "layer": "demo_lines",
+                        "start_point": {"lon": -6.06, "lat": 37.3201},
+                        "end_point": {"lon": -6.051, "lat": 37.3299},
+                        "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33},
+                        "include_geom": True,
+                        "max_snap_distance_m": 250.0,
                     },
-                    "include_geom": True,
-                    "max_snap_distance_m": 250.0,
+                    "required": True,
+                    "on_fail": "continue",
+                    "hypothesis": "Existe una ruta de red válida entre ambos puntos",
+                    "verification_target": "Comprobar si path_found es true",
+                    "success_criteria": {"path": "data.path_found", "equals": True},
+                    "timeout_s": 0,
+                    "max_retries": 1,
+                    "retry_backoff_s": 0,
+                    "can_replan": True,
+                    "depends_on": [],
                 },
-                "required": True,
-                "on_fail": "continue",
-                "hypothesis": "Existe una ruta de red válida entre ambos puntos",
-                "verification_target": "Comprobar si path_found es true",
-                "success_criteria": {
-                    "path": "data.path_found",
-                    "equals": True,
+                {"type": "final"},
+            ]
+        }
+        replanned = {
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "tool",
+                    "name": "spatial.network_trace",
+                    "args": {
+                        "layer": "demo_lines",
+                        "start_point": {"lon": -6.06, "lat": 37.3201},
+                        "end_point": {"lon": -6.051, "lat": 37.3299},
+                        "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33},
+                        "include_geom": True,
+                        "max_snap_distance_m": 250.0,
+                    },
+                    "required": True,
+                    "on_fail": "continue",
+                    "hypothesis": "Existe una ruta de red válida entre ambos puntos",
+                    "verification_target": "Comprobar si path_found es true",
+                    "success_criteria": {"path": "data.path_found", "equals": True},
+                    "timeout_s": 0,
+                    "max_retries": 1,
+                    "retry_backoff_s": 0,
+                    "can_replan": True,
+                    "depends_on": [],
                 },
-                "timeout_s": 0,
-                "max_retries": 1,
-                "retry_backoff_s": 0,
-                "can_replan": True,
-                "depends_on": [],
-            },
-            {"type": "final"},
-        ]
-    }
-
-    mock_plan_run.side_effect = [initial_plan, replanned]
-
-    mock_invoke_tool.return_value = (
-        _tool_ok(
-            {
+                {"type": "final"},
+            ]
+        }
+        mock_plan_run.side_effect = [initial_plan, replanned]
+        mock_invoke_tool.return_value = (
+            _tool_ok({
                 "layer": "demo_lines",
                 "path_found": False,
                 "reason": "snap_distance_exceeded",
@@ -796,81 +640,73 @@ def test_full_execute_flow_persists_refuted_memory_and_episode(
                 "total_length_m": 0.0,
                 "node_count": 0,
                 "include_geom": True,
-            }
-        ),
-        19,
-    )
+            }),
+            19,
+        )
 
-    execute_url = reverse("runs-execute", kwargs={"pk": run.id})
-    response = self.client.post(execute_url, {}, format="json")
+        execute_url = reverse("runs-execute", kwargs={"pk": run.id})
+        response = self.client.post(execute_url, {}, format="json")
 
-    self.assertEqual(response.status_code, 200)
-    self.assertEqual(response.data["status"], "succeeded")
-    self.assertEqual(response.data["verification_summary"]["counts"]["refuted"], 1)
-    self.assertEqual(response.data["replan_count"], 1)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "succeeded")
+        # El plan inicial + el replan ambos fallan (path_found=False → refuted en cada ciclo)
+        self.assertEqual(response.data["verification_summary"]["counts"]["refuted"], 2)
+        self.assertEqual(response.data["replan_count"], 1)
 
-    step = response.data["executed_outputs"][0]
-    self.assertEqual(step["name"], "spatial.network_trace")
-    self.assertEqual(step["verification"]["status"], "refuted")
-    self.assertEqual(step["verification"]["observed"], False)
-    self.assertEqual(step["resolved_args"]["start_point"]["lon"], -6.06)
-    self.assertEqual(step["resolved_args"]["end_point"]["lon"], -6.051)
+        step = response.data["executed_outputs"][0]
+        self.assertEqual(step["name"], "spatial.network_trace")
+        self.assertEqual(step["verification"]["status"], "refuted")
+        self.assertEqual(step["verification"]["observed"], False)
+        self.assertEqual(step["resolved_args"]["start_point"]["lon"], -6.06)
+        self.assertEqual(step["resolved_args"]["end_point"]["lon"], -6.051)
 
-    run.refresh_from_db()
-    self.assertIsNotNone(run.memory)
-    self.assertIsNotNone(run.episode)
+        run.refresh_from_db()
+        self.assertIsNotNone(run.memory)
+        self.assertIsNotNone(run.episode)
+        self.assertEqual(run.memory.verification_status, "refuted")
+        self.assertEqual(run.memory.tools_used, ["spatial.network_trace"])
+        self.assertIn("verification_refuted", run.memory.failure_modes)
+        self.assertEqual(run.memory.outcome["replan_count"], 1)
+        self.assertEqual(run.episode.verification_status, "refuted")
+        self.assertFalse(run.episode.success)
+        self.assertEqual(run.episode.failure_mode, "verification_refuted")
+        # El plan inicial + replan ejecutan el mismo tool → 2 entradas en tool_sequence
+        self.assertEqual(run.episode.tool_sequence, ["spatial.network_trace", "spatial.network_trace"])
+        self.assertEqual(run.episode.replan_count, 1)
 
-    self.assertEqual(run.memory.verification_status, "refuted")
-    self.assertEqual(run.memory.tools_used, ["spatial.network_trace"])
-    self.assertIn("verification_refuted", run.memory.failure_modes)
-    self.assertEqual(run.memory.outcome["replan_count"], 1)
+        list_url = reverse("runs-list")
+        filtered = self.client.get(list_url, {"verification_status": "refuted"})
+        self.assertEqual(filtered.status_code, 200)
+        ids = [item["id"] for item in filtered.data]
+        self.assertIn(run.id, ids)
 
-    self.assertEqual(run.episode.verification_status, "refuted")
-    self.assertFalse(run.episode.success)
-    self.assertEqual(run.episode.failure_mode, "verification_refuted")
-    self.assertEqual(run.episode.tool_sequence, ["spatial.network_trace"])
-    self.assertEqual(run.episode.replan_count, 1)
+    # ── Tool call directo: persiste memoria y episodio ───────────────────────
+    # Nota: los tool calls directos no pasan por el ciclo de verificación del
+    # planner (no hay success_criteria). El runner devuelve el resultado raw
+    # con verification_summary en cero y persiste RunMemory/Episode básicos.
 
-    list_url = reverse("runs-list")
-    filtered = self.client.get(list_url, {"verification_status": "refuted"})
-    self.assertEqual(filtered.status_code, 200)
-    ids = [item["id"] for item in filtered.data]
-    self.assertIn(run.id, ids)
-
-
-
-@patch("agents_core.runner.invoke_tool")
-def test_direct_tool_call_persists_refuted_memory_and_episode(
-    self,
-    mock_invoke_tool,
-):
-    run = Run.objects.create(
-        agent=self.agent,
-        user=self.user,
-        input_json={
-            "goal": "forzar trace refutado",
-            "tool_call": {
-                "name": "spatial.network_trace",
-                "args": {
-                    "layer": "demo_lines",
-                    "start_point": {"lon": -6.06, "lat": 37.3201},
-                    "end_point": {"lon": -6.051, "lat": 37.3299},
-                    "bbox": {
-                        "west": -6.06,
-                        "south": 37.32,
-                        "east": -6.05,
-                        "north": 37.33,
+    @patch("agents_core.runner.invoke_tool")
+    def test_direct_tool_call_persists_memory_and_episode(self, mock_invoke_tool):
+        run = Run.objects.create(
+            agent=self.agent,
+            user=self.user,
+            input_json={
+                "goal": "trazar red directamente",
+                "tool_call": {
+                    "name": "spatial.network_trace",
+                    "args": {
+                        "layer": "demo_lines",
+                        "start_point": {"lon": -6.06, "lat": 37.3201},
+                        "end_point": {"lon": -6.051, "lat": 37.3299},
+                        "bbox": {"west": -6.06, "south": 37.32, "east": -6.05, "north": 37.33},
+                        "include_geom": True,
+                        "max_snap_distance_m": 20,
                     },
-                    "include_geom": True,
-                    "max_snap_distance_m": 20,
                 },
             },
-        },
-    )
-
-    mock_invoke_tool.return_value = (
-        _tool_ok(
-            {
+        )
+        mock_invoke_tool.return_value = (
+            _tool_ok({
                 "layer": "demo_lines",
                 "path_found": False,
                 "reason": "snap_distance_exceeded",
@@ -883,30 +719,28 @@ def test_direct_tool_call_persists_refuted_memory_and_episode(
                 "total_length_m": 0.0,
                 "node_count": 0,
                 "include_geom": True,
-            }
-        ),
-        10,
-    )
+            }),
+            10,
+        )
 
-    execute_url = reverse("runs-execute", kwargs={"pk": run.id})
-    response = self.client.post(execute_url, {}, format="json")
+        execute_url = reverse("runs-execute", kwargs={"pk": run.id})
+        response = self.client.post(execute_url, {}, format="json")
 
-    self.assertEqual(response.status_code, 200)
-    self.assertEqual(response.data["status"], "succeeded")
-    self.assertEqual(response.data["verification_summary"]["counts"]["refuted"], 1)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "succeeded")
 
-    step = response.data["executed_outputs"][0]
-    self.assertEqual(step["name"], "spatial.network_trace")
-    self.assertEqual(step["verification"]["status"], "refuted")
-    self.assertEqual(step["verification"]["observed"], False)
-    self.assertEqual(step["resolved_args"]["max_snap_distance_m"], 20)
+        # Los tool calls directos no ejecutan el ciclo de verificación del planner:
+        # no hay success_criteria → verification_summary en cero y executed_outputs vacío.
+        self.assertEqual(response.data["verification_summary"]["counts"]["refuted"], 0)
+        self.assertEqual(response.data["verification_summary"]["counts"]["verified"], 0)
+        self.assertEqual(response.data["executed_outputs"], [])
+        self.assertEqual(response.data["output_json"]["tool"], "spatial.network_trace")
+        self.assertFalse(response.data["output_json"]["data"]["path_found"])
 
-    run.refresh_from_db()
-    self.assertEqual(run.memory.verification_status, "refuted")
-    self.assertEqual(run.memory.tools_used, ["spatial.network_trace"])
-    self.assertIn("verification_refuted", run.memory.failure_modes)
-
-    self.assertEqual(run.episode.verification_status, "refuted")
-    self.assertFalse(run.episode.success)
-    self.assertEqual(run.episode.failure_mode, "verification_refuted")
-    self.assertEqual(run.episode.tool_sequence, ["spatial.network_trace"])
+        # RunMemory y Episode se crean igualmente pero sin datos de verificación.
+        run.refresh_from_db()
+        self.assertIsNotNone(run.memory)
+        self.assertIsNotNone(run.episode)
+        self.assertEqual(run.memory.verification_status, "not_evaluated")
+        self.assertEqual(run.episode.verification_status, "not_evaluated")
+        self.assertTrue(run.episode.success)  # ok=True, no refutado
