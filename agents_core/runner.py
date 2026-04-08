@@ -832,12 +832,14 @@ def execute_run(run: Run) -> Run:
                 if not replan_triggered:
                     break
 
+            from agents_llm.planner import _build_session_context
             final_text = synthesize_run(
                 goal=goal,
                 agent_name=run.agent.name,
                 agent_profile=getattr(run.agent, "profile", "compact"),
                 plan=plan,
                 step_outputs=executed_outputs,
+                session_context=_build_session_context(run),
             )
 
             log_step(

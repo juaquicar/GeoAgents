@@ -274,3 +274,32 @@ class EpisodePattern(models.Model):
             f"goal_signature={self.goal_signature}, domain={self.domain}, "
             f"success_rate={self.success_rate:.2f})"
         )
+
+
+class RunFeedback(models.Model):
+    """
+    Valoración del usuario sobre el resultado de un run.
+    rating=1 → útil, rating=-1 → no útil.
+    Actualiza Episode.success y recalcula EpisodePattern.success_rate.
+    """
+    RATING_CHOICES = [
+        (1, "Útil"),
+        (-1, "No útil"),
+    ]
+
+    run = models.OneToOneField(Run, on_delete=models.CASCADE, related_name="feedback")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    rating = models.SmallIntegerField(choices=RATING_CHOICES)
+    comment = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["run", "rating"]),
+        ]
+
+    def __str__(self):
+        return f"RunFeedback(run={self.run_id}, rating={self.rating})"

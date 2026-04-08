@@ -34,6 +34,14 @@ Reglas por tool:
 - spatial.route_cost: si path_found = true, describe el coste total, longitud y número de segmentos. Si path_found = false, indica que no existe ruta y el motivo.
 - spatial.aggregate: describe la distribución por grupos. Menciona el grupo dominante (mayor count), el total de grupos y los campos de agrupación.
 - spatial.buffer: describe los elementos encontrados dentro del radio. Menciona el radio, la fuente (punto o elemento de capa), el total encontrado y el más cercano si hay items.
+- spatial.dissolve: describe los grupos resultantes. Menciona la capa, el campo de disolución, el número de grupos y el área fusionada de los grupos principales.
+- spatial.centroid: describe los centroides extraídos. Menciona la capa, el total de elementos y las coordenadas de muestra.
+- spatial.count_within: describe cuántos elementos de target_layer hay en cada feature de source_layer. Menciona los source features con más elementos.
+- spatial.spatial_join: describe qué atributos se han adjuntado y de qué capa. Menciona el join_type y si hubo features sin match (null).
+- spatial.clip: describe cuántos features se recortaron y las áreas/longitudes resultantes.
+- spatial.difference: describe el área original, el área residual y cuántos features se restaron.
+- spatial.grid_stats: describe las celdas con mayor concentración. Menciona la resolución de celda y el número de celdas no vacías.
+- spatial.cluster_dbscan: describe el número de clusters encontrados, el cluster más grande y los outliers. Menciona eps_m y min_points usados.
 
 Reglas de verificación:
 - Si existe verification_summary, debes respetar el estado de verificación.
@@ -52,6 +60,13 @@ Estructura preferida para "rich" e "investigate":
 1. Resumen ejecutivo (1-2 frases)
 2. Hallazgos principales (lista)
 3. Conclusión
+
+Si session_context está presente:
+- Contiene los turnos anteriores de la misma conversación (goal, ok, final_text).
+- Úsalo para dar continuidad narrativa cuando el usuario hace preguntas de seguimiento.
+- Si el turno anterior encontró N elementos y el actual refina la búsqueda, puedes hacer referencia al análisis previo de forma natural.
+- No repitas literalmente el contenido del turno anterior; sintetiza el progreso de la conversación.
+- Si un turno previo tiene ok=false, no lo menciones como resultado previo válido.
 """
 
 
@@ -361,6 +376,466 @@ def _facts_from_route_cost(data: Dict[str, Any]) -> List[str]:
     return facts
 
 
+def _facts_from_dissolve(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    dissolve_field = data.get("dissolve_field", "")
+    total_groups = data.get("total_groups", 0)
+    features = data.get("dissolved_features") or []
+
+    facts.append(
+        f"spatial.dissolve fusionó la capa '{layer}' por el campo '{dissolve_field}': "
+        f"{total_groups} grupos resultantes."
+    )
+    for f in features[:5]:
+        val = f.get(dissolve_field, "?")
+        count = f.get("feature_count", "?")
+        area = f.get("dissolved_area_m2")
+        if area is not None:
+            facts.append(f"Grupo '{val}': {count} features originales, área fusionada {area:.1f} m².")
+        else:
+            facts.append(f"Grupo '{val}': {count} features originales.")
+    return facts
+
+
+def _facts_from_centroid(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    count_total = data.get("count_total", 0)
+    items = data.get("items") or []
+
+    facts.append(f"spatial.centroid extrajo {count_total} centroides de la capa '{layer}'.")
+    for item in items[:5]:
+        lon = item.get("centroid_lon")
+        lat = item.get("centroid_lat")
+        fid = item.get("id") or item.get("fid")
+        if lon is not None and lat is not None:
+            facts.append(f"Centroide del elemento {fid}: ({lon:.5f}, {lat:.5f}).")
+    return facts
+
+
+def _extract_dissolve_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    features = data.get("dissolved_features") or []
+    return {
+        "tool": "spatial.dissolve",
+        "layer": data.get("layer"),
+        "dissolve_field": data.get("dissolve_field"),
+        "total_groups": data.get("total_groups", len(features)),
+        "groups_sample": features[:10],
+    }
+
+
+def _extract_centroid_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    items = data.get("items") or []
+    return {
+        "tool": "spatial.centroid",
+        "layer": data.get("layer"),
+        "count_total": data.get("count_total", len(items)),
+        "items_sample": items[:10],
+    }
+
+
+def _facts_from_count_within(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    src = data.get("source_layer", "")
+    tgt = data.get("target_layer", "")
+    items = data.get("items") or []
+    facts.append(f"spatial.count_within: conteo de '{tgt}' dentro de cada feature de '{src}'.")
+    for item in items[:5]:
+        fid = item.get("id") or item.get("fid")
+        count = item.get("count_within", 0)
+        facts.append(f"Feature {fid}: {count} elementos de '{tgt}' en su interior.")
+    return facts
+
+
+def _facts_from_spatial_join(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    src = data.get("source_layer", "")
+    join = data.get("join_layer", "")
+    join_type = data.get("join_type", "")
+    count = data.get("count_total", len(data.get("items") or []))
+    facts.append(
+        f"spatial.spatial_join ({join_type}): adjuntó atributos de '{join}' a {count} features de '{src}'."
+    )
+    return facts
+
+
+def _facts_from_clip(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    src = data.get("source_layer", "")
+    clip_layer = data.get("clip_layer") or "bbox"
+    items = data.get("items") or []
+    facts.append(f"spatial.clip recortó {len(items)} features de '{src}' a la geometría de '{clip_layer}'.")
+    for item in items[:3]:
+        fid = item.get("id") or item.get("fid")
+        area = item.get("clipped_area_m2")
+        length = item.get("clipped_length_m")
+        if area and float(area) > 0:
+            facts.append(f"Feature {fid}: área recortada {float(area):.1f} m².")
+        elif length and float(length) > 0:
+            facts.append(f"Feature {fid}: longitud recortada {float(length):.1f} m.")
+    return facts
+
+
+def _facts_from_difference(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    src = data.get("source_layer", "")
+    sub = data.get("subtract_layer", "")
+    orig = data.get("original_area_m2")
+    diff = data.get("difference_area_m2")
+    sub_count = data.get("subtracted_features", 0)
+    facts.append(
+        f"spatial.difference: área original de '{src}' {orig:.1f} m², "
+        f"área residual tras restar '{sub}': {diff:.1f} m² "
+        f"({sub_count} features restados)."
+        if orig is not None and diff is not None else
+        f"spatial.difference ejecutado sobre '{src}' restando '{sub}'."
+    )
+    return facts
+
+
+def _facts_from_grid_stats(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    cell_size = data.get("cell_size_m")
+    non_empty = data.get("non_empty_cells", len(data.get("cells") or []))
+    cells = data.get("cells") or []
+    facts.append(
+        f"spatial.grid_stats: {non_empty} celdas con elementos de '{layer}' "
+        f"(resolución {cell_size} m)."
+    )
+    if cells:
+        top = cells[0]
+        facts.append(f"Celda más densa: col={top.get('col')}, row={top.get('row')}, count={top.get('count')}.")
+    return facts
+
+
+def _facts_from_cluster_dbscan(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    eps_m = data.get("eps_m")
+    min_pts = data.get("min_points")
+    n_clusters = data.get("cluster_count", 0)
+    noise = data.get("noise_count", 0)
+    total = data.get("total_features", 0)
+    facts.append(
+        f"spatial.cluster_dbscan en '{layer}' (eps={eps_m} m, min_points={min_pts}): "
+        f"{n_clusters} clusters encontrados, {noise} outliers de {total} features totales."
+    )
+    summary = data.get("cluster_summary") or []
+    real = [s for s in summary if s.get("cluster_id") != -1]
+    if real:
+        top = real[0]
+        facts.append(
+            f"Cluster más grande: id={top.get('cluster_id')}, "
+            f"{top.get('count')} features, centroide "
+            f"({top.get('centroid_lon', 0):.5f}, {top.get('centroid_lat', 0):.5f})."
+        )
+    return facts
+
+
+def _extract_count_within_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.count_within",
+        "source_layer": data.get("source_layer"),
+        "target_layer": data.get("target_layer"),
+        "items": (data.get("items") or [])[:10],
+    }
+
+
+def _extract_spatial_join_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.spatial_join",
+        "source_layer": data.get("source_layer"),
+        "join_layer": data.get("join_layer"),
+        "join_type": data.get("join_type"),
+        "count_total": data.get("count_total"),
+        "items_sample": (data.get("items") or [])[:5],
+    }
+
+
+def _extract_clip_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.clip",
+        "source_layer": data.get("source_layer"),
+        "clip_layer": data.get("clip_layer"),
+        "count_total": data.get("count_total"),
+        "items_sample": (data.get("items") or [])[:5],
+    }
+
+
+def _extract_difference_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.difference",
+        "source_layer": data.get("source_layer"),
+        "subtract_layer": data.get("subtract_layer"),
+        "original_area_m2": data.get("original_area_m2"),
+        "difference_area_m2": data.get("difference_area_m2"),
+        "subtracted_features": data.get("subtracted_features"),
+    }
+
+
+def _extract_grid_stats_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    cells = data.get("cells") or []
+    return {
+        "tool": "spatial.grid_stats",
+        "layer": data.get("layer"),
+        "cell_size_m": data.get("cell_size_m"),
+        "non_empty_cells": data.get("non_empty_cells", len(cells)),
+        "top_cells": cells[:10],
+    }
+
+
+def _extract_cluster_dbscan_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.cluster_dbscan",
+        "layer": data.get("layer"),
+        "eps_m": data.get("eps_m"),
+        "min_points": data.get("min_points"),
+        "cluster_count": data.get("cluster_count"),
+        "noise_count": data.get("noise_count"),
+        "total_features": data.get("total_features"),
+        "cluster_summary": data.get("cluster_summary") or [],
+    }
+
+
+def _facts_from_convex_hull(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    count = data.get("feature_count", 0)
+    area = data.get("hull_area_m2")
+    lon = data.get("centroid_lon")
+    lat = data.get("centroid_lat")
+    area_str = f", área={area:,.0f} m²" if area else ""
+    coord_str = f", centroide ({lon:.5f}, {lat:.5f})" if lon and lat else ""
+    facts.append(
+        f"spatial.convex_hull de '{layer}': {count} features incluidos{area_str}{coord_str}."
+    )
+    return facts
+
+
+def _extract_convex_hull_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.convex_hull",
+        "layer": data.get("layer"),
+        "feature_count": data.get("feature_count"),
+        "hull_area_m2": data.get("hull_area_m2"),
+        "centroid_lon": data.get("centroid_lon"),
+        "centroid_lat": data.get("centroid_lat"),
+    }
+
+
+def _facts_from_voronoi(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    count = data.get("polygon_count", 0)
+    facts.append(
+        f"spatial.voronoi de '{layer}': {count} polígonos de Voronoi generados."
+    )
+    polys = data.get("polygons") or []
+    if polys:
+        areas = [p.get("voronoi_area_m2", 0) for p in polys if p.get("voronoi_area_m2")]
+        if areas:
+            facts.append(
+                f"Área media de influencia: {sum(areas)/len(areas):,.0f} m² "
+                f"(rango {min(areas):,.0f}–{max(areas):,.0f} m²)."
+            )
+    return facts
+
+
+def _extract_voronoi_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    polys = data.get("polygons") or []
+    return {
+        "tool": "spatial.voronoi",
+        "layer": data.get("layer"),
+        "polygon_count": data.get("polygon_count"),
+        "polygons_sample": polys[:5],
+    }
+
+
+def _facts_from_measure(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    geo_type = data.get("geometry_type", "")
+    group_by = data.get("group_by")
+    if group_by:
+        groups = data.get("groups") or []
+        facts.append(
+            f"spatial.measure de '{layer}' agrupado por '{group_by}': {len(groups)} grupos."
+        )
+        for g in groups[:3]:
+            if geo_type == "line":
+                val = g.get("total_length_m")
+                metric = f"longitud={val:,.0f} m" if val else ""
+            elif geo_type == "polygon":
+                val = g.get("total_area_m2")
+                metric = f"área={val:,.0f} m²" if val else ""
+            else:
+                val = g.get("feature_count")
+                metric = f"count={val}" if val else ""
+            facts.append(f"  {g.get(group_by, '?')}: {metric}")
+    else:
+        totals = data.get("totals") or {}
+        if geo_type == "line":
+            total_l = totals.get("total_length_m")
+            avg_l = totals.get("avg_length_m")
+            facts.append(
+                f"spatial.measure de '{layer}' (líneas): "
+                f"longitud total={total_l:,.0f} m, media={avg_l:,.0f} m/feature."
+                if total_l else f"spatial.measure de '{layer}': sin datos de longitud."
+            )
+        elif geo_type == "polygon":
+            total_a = totals.get("total_area_m2")
+            facts.append(
+                f"spatial.measure de '{layer}' (polígonos): área total={total_a:,.0f} m²."
+                if total_a else f"spatial.measure de '{layer}': sin datos de área."
+            )
+        else:
+            cnt = totals.get("feature_count", 0)
+            facts.append(f"spatial.measure de '{layer}': {cnt} puntos.")
+    return facts
+
+
+def _extract_measure_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.measure",
+        "layer": data.get("layer"),
+        "geometry_type": data.get("geometry_type"),
+        "group_by": data.get("group_by"),
+        "totals": data.get("totals"),
+        "groups_sample": (data.get("groups") or [])[:10],
+    }
+
+
+def _facts_from_overlay(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer_a = data.get("layer_a", "")
+    layer_b = data.get("layer_b", "")
+    mode = data.get("mode", "")
+    area = data.get("result_area_m2", 0)
+    is_empty = data.get("is_empty", False)
+    if is_empty:
+        facts.append(
+            f"spatial.overlay ({mode}) entre '{layer_a}' y '{layer_b}': resultado vacío (sin solapamiento)."
+        )
+    else:
+        facts.append(
+            f"spatial.overlay ({mode}) entre '{layer_a}' y '{layer_b}': área resultado={area:,.0f} m²."
+        )
+    return facts
+
+
+def _extract_overlay_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.overlay",
+        "layer_a": data.get("layer_a"),
+        "layer_b": data.get("layer_b"),
+        "mode": data.get("mode"),
+        "result_area_m2": data.get("result_area_m2"),
+        "is_empty": data.get("is_empty"),
+    }
+
+
+def _facts_from_nearest_neighbor(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    src = data.get("source_layer", "")
+    nbr = data.get("neighbor_layer", "")
+    n = data.get("pair_count", 0)
+    max_d = data.get("max_distance_m")
+    max_str = f" (máx {max_d} m)" if max_d else ""
+    facts.append(
+        f"spatial.nearest_neighbor '{src}' → '{nbr}'{max_str}: {n} pares encontrados."
+    )
+    pairs = data.get("pairs") or []
+    if pairs:
+        dists = [p.get("distance_m", 0) for p in pairs if p.get("distance_m") is not None]
+        if dists:
+            facts.append(
+                f"Distancia media al vecino: {sum(dists)/len(dists):,.1f} m "
+                f"(mín {min(dists):,.1f} m, máx {max(dists):,.1f} m)."
+            )
+    return facts
+
+
+def _extract_nearest_neighbor_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.nearest_neighbor",
+        "source_layer": data.get("source_layer"),
+        "neighbor_layer": data.get("neighbor_layer"),
+        "pair_count": data.get("pair_count"),
+        "pairs_sample": (data.get("pairs") or [])[:5],
+    }
+
+
+def _facts_from_within_distance(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    src = data.get("source_layer", "")
+    ref = data.get("reference_layer", "")
+    dist = data.get("distance_m", 0)
+    total = data.get("total_within_distance", 0)
+    facts.append(
+        f"spatial.within_distance: {total} features de '{src}' a menos de {dist} m de '{ref}'."
+    )
+    return facts
+
+
+def _extract_within_distance_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.within_distance",
+        "source_layer": data.get("source_layer"),
+        "reference_layer": data.get("reference_layer"),
+        "distance_m": data.get("distance_m"),
+        "total_within_distance": data.get("total_within_distance"),
+        "features_sample": (data.get("features") or [])[:5],
+    }
+
+
+def _facts_from_topology_check(data: Dict[str, Any]) -> List[str]:
+    facts = []
+    layer = data.get("layer", "")
+    total = data.get("total_features_checked", 0)
+    invalid = data.get("invalid_geometry_count", 0)
+    clean = data.get("is_topologically_clean", False)
+    if clean:
+        facts.append(f"spatial.topology_check de '{layer}': {total} features revisados, sin problemas detectados.")
+    else:
+        facts.append(
+            f"spatial.topology_check de '{layer}': {total} features revisados, "
+            f"{invalid} geometrías inválidas/vacías encontradas."
+        )
+        overlap_pairs = data.get("overlapping_pairs_count")
+        if overlap_pairs is not None and overlap_pairs > 0:
+            facts.append(f"Además, {overlap_pairs} pares con solapamiento detectados.")
+    return facts
+
+
+def _extract_topology_check_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
+    data = step_output.get("data") or {}
+    return {
+        "tool": "spatial.topology_check",
+        "layer": data.get("layer"),
+        "total_features_checked": data.get("total_features_checked"),
+        "invalid_geometry_count": data.get("invalid_geometry_count"),
+        "is_topologically_clean": data.get("is_topologically_clean"),
+        "invalid_features": (data.get("invalid_features") or [])[:10],
+        "overlapping_pairs_count": data.get("overlapping_pairs_count"),
+    }
+
+
 def _extract_intersects_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
     data = step_output.get("data") or {}
     features = data.get("features") or data.get("items") or data.get("results") or []
@@ -635,6 +1110,36 @@ def extract_structured_facts(step_outputs: List[Dict[str, Any]]) -> List[Dict[st
             facts.append(_extract_buffer_facts(step))
         elif tool_name == "spatial.route_cost":
             facts.append(_extract_route_cost_facts(step))
+        elif tool_name == "spatial.dissolve":
+            facts.append(_extract_dissolve_facts(step))
+        elif tool_name == "spatial.centroid":
+            facts.append(_extract_centroid_facts(step))
+        elif tool_name == "spatial.count_within":
+            facts.append(_extract_count_within_facts(step))
+        elif tool_name == "spatial.spatial_join":
+            facts.append(_extract_spatial_join_facts(step))
+        elif tool_name == "spatial.clip":
+            facts.append(_extract_clip_facts(step))
+        elif tool_name == "spatial.difference":
+            facts.append(_extract_difference_facts(step))
+        elif tool_name == "spatial.grid_stats":
+            facts.append(_extract_grid_stats_facts(step))
+        elif tool_name == "spatial.cluster_dbscan":
+            facts.append(_extract_cluster_dbscan_facts(step))
+        elif tool_name == "spatial.convex_hull":
+            facts.append(_extract_convex_hull_facts(step))
+        elif tool_name == "spatial.voronoi":
+            facts.append(_extract_voronoi_facts(step))
+        elif tool_name == "spatial.measure":
+            facts.append(_extract_measure_facts(step))
+        elif tool_name == "spatial.overlay":
+            facts.append(_extract_overlay_facts(step))
+        elif tool_name == "spatial.nearest_neighbor":
+            facts.append(_extract_nearest_neighbor_facts(step))
+        elif tool_name == "spatial.within_distance":
+            facts.append(_extract_within_distance_facts(step))
+        elif tool_name == "spatial.topology_check":
+            facts.append(_extract_topology_check_facts(step))
 
     return facts
 
@@ -673,6 +1178,36 @@ def build_tool_facts(step_outputs: List[Dict[str, Any]]) -> List[str]:
             facts.extend(_facts_from_buffer(data))
         elif tool_name == "spatial.route_cost":
             facts.extend(_facts_from_route_cost(data))
+        elif tool_name == "spatial.dissolve":
+            facts.extend(_facts_from_dissolve(data))
+        elif tool_name == "spatial.centroid":
+            facts.extend(_facts_from_centroid(data))
+        elif tool_name == "spatial.count_within":
+            facts.extend(_facts_from_count_within(data))
+        elif tool_name == "spatial.spatial_join":
+            facts.extend(_facts_from_spatial_join(data))
+        elif tool_name == "spatial.clip":
+            facts.extend(_facts_from_clip(data))
+        elif tool_name == "spatial.difference":
+            facts.extend(_facts_from_difference(data))
+        elif tool_name == "spatial.grid_stats":
+            facts.extend(_facts_from_grid_stats(data))
+        elif tool_name == "spatial.cluster_dbscan":
+            facts.extend(_facts_from_cluster_dbscan(data))
+        elif tool_name == "spatial.convex_hull":
+            facts.extend(_facts_from_convex_hull(data))
+        elif tool_name == "spatial.voronoi":
+            facts.extend(_facts_from_voronoi(data))
+        elif tool_name == "spatial.measure":
+            facts.extend(_facts_from_measure(data))
+        elif tool_name == "spatial.overlay":
+            facts.extend(_facts_from_overlay(data))
+        elif tool_name == "spatial.nearest_neighbor":
+            facts.extend(_facts_from_nearest_neighbor(data))
+        elif tool_name == "spatial.within_distance":
+            facts.extend(_facts_from_within_distance(data))
+        elif tool_name == "spatial.topology_check":
+            facts.extend(_facts_from_topology_check(data))
         else:
             facts.append(f"La tool '{tool_name}' se ejecutó correctamente.")
 
@@ -748,6 +1283,7 @@ def build_synthesizer_user_prompt(
     agent_profile: str,
     plan: Dict[str, Any],
     step_outputs: List[Dict[str, Any]],
+    session_context: List[Dict[str, Any]] | None = None,
 ) -> str:
     executed_tool_names = [
         step.get("name")
@@ -769,6 +1305,15 @@ def build_synthesizer_user_prompt(
         "structured_facts": structured_facts,
         "verification_summary": verification_summary,
     }
+    if session_context:
+        # Solo enviamos los turnos exitosos con final_text — el synthesizer no necesita ver fallos
+        prev = [
+            {"goal": t["goal"], "final_text": t.get("final_text", "")}
+            for t in session_context
+            if t.get("ok") and t.get("final_text")
+        ]
+        if prev:
+            payload["session_context"] = prev
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -779,6 +1324,7 @@ def synthesize_run(
     agent_profile: str,
     plan: Dict[str, Any],
     step_outputs: List[Dict[str, Any]],
+    session_context: List[Dict[str, Any]] | None = None,
 ) -> str:
     user_prompt = build_synthesizer_user_prompt(
         goal=goal,
@@ -786,6 +1332,7 @@ def synthesize_run(
         agent_profile=agent_profile,
         plan=plan,
         step_outputs=step_outputs,
+        session_context=session_context,
     )
     return chat_completion_text(
         system_prompt=SYNTHESIZER_SYSTEM_PROMPT,

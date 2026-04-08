@@ -2,7 +2,7 @@ from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import Agent, Run, RunStep
+from .models import Agent, Run, RunFeedback, RunStep
 from .serializers import (
     AgentSerializer,
     RunSerializer,
@@ -10,6 +10,41 @@ from .serializers import (
     RunTraceSerializer,
 )
 from .runner import execute_run
+
+
+def _apply_feedback_to_episode(run, rating: int) -> None:
+    """
+    Actualiza Episode.success con la valoración del usuario y recalcula
+    EpisodePattern.success_rate para que los pattern_hints mejoren con el tiempo.
+    """
+    from .models import Episode, EpisodePattern
+    try:
+        episode = run.episode
+    except Exception:
+        return
+
+    user_success = rating == 1
+    episode.success = user_success
+    episode.save(update_fields=["success", "updated_at"])
+
+    matching = Episode.objects.filter(
+        goal_signature=episode.goal_signature,
+        domain=episode.domain,
+        tool_sequence_signature=episode.tool_sequence_signature,
+    )
+    sample_size = matching.count()
+    success_count = matching.filter(success=True).count()
+
+    EpisodePattern.objects.filter(
+        goal_signature=episode.goal_signature,
+        domain=episode.domain,
+        tool_sequence_signature=episode.tool_sequence_signature,
+    ).update(
+        sample_size=sample_size,
+        success_count=success_count,
+        failure_count=sample_size - success_count,
+        success_rate=success_count / sample_size if sample_size else 0.0,
+    )
 
 
 def _run_inspect(agent):
@@ -116,3 +151,33 @@ class RunViewSet(viewsets.ModelViewSet):
     def trace(self, request, pk=None):
         run = self.get_object()
         return Response(RunTraceSerializer(run).data)
+
+    @action(detail=True, methods=["post"])
+    def feedback(self, request, pk=None):
+        """
+        POST /api/runs/{id}/feedback/
+        Body: {"rating": 1 | -1, "comment": "..."}
+
+        Guarda la valoración del usuario y actualiza Episode.success
+        y EpisodePattern.success_rate con la señal real del usuario.
+        """
+        run = self.get_object()
+
+        rating = request.data.get("rating")
+        if rating not in (1, -1):
+            return Response({"error": "rating must be 1 or -1"}, status=400)
+
+        comment = (request.data.get("comment") or "").strip()
+
+        feedback, _ = RunFeedback.objects.update_or_create(
+            run=run,
+            defaults={"user": request.user, "rating": rating, "comment": comment},
+        )
+
+        _apply_feedback_to_episode(run, rating)
+
+        return Response({
+            "run": run.pk,
+            "rating": rating,
+            "comment": comment,
+        }, status=200)

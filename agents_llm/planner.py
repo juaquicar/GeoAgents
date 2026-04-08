@@ -71,6 +71,21 @@ Guía de selección de herramienta — sigue este orden de prioridad:
    Si el objetivo menciona "a X metros de este elemento" donde ese elemento es una geometría de capa (línea, polígono…) → usa spatial.buffer con source_layer+source_id.
 4. Si el objetivo menciona intersección, solape, relación espacial entre dos capas, o elementos contenidos en otra capa → usa spatial.intersects.
 5. Si el objetivo menciona cuántos hay por tipo/categoría, distribución, agrupaciones, predominancia, o suma/promedio de un campo → usa spatial.aggregate.
+5b. Si el objetivo menciona cuántos features de una capa están dentro de cada feature de otra capa (p.ej. "cuántas farolas por zona verde", "incidentes por parcela") → usa spatial.count_within.
+5c. Si el objetivo menciona adjuntar atributos de una capa a otra según relación espacial (p.ej. "añade el barrio a cada farola", "¿en qué parcela está cada árbol?") → usa spatial.spatial_join.
+5d. Si el objetivo menciona recortar geometrías al límite de otra capa o feature → usa spatial.clip.
+5e. Si el objetivo menciona área libre, zona no cubierta, diferencia geométrica entre dos capas → usa spatial.difference.
+5f. Si el objetivo menciona distribución espacial en cuadrícula, densidad por celda, mapa de calor → usa spatial.grid_stats.
+5g. Si el objetivo menciona fusionar, disolver, unir geometrías agrupadas por un campo (p.ej. "une las parcelas del mismo propietario", "fusiona los tramos por tipo") → usa spatial.dissolve.
+5h. Si el objetivo menciona clustering, agrupaciones naturales, focos de concentración, detectar zonas densas → usa spatial.cluster_dbscan.
+5i. Si el objetivo menciona obtener centroides, puntos centrales o coordenadas representativas de geometrías (polígonos, líneas) → usa spatial.centroid.
+5j. Si el objetivo pide la extensión, contorno externo o área que ocupa un conjunto de features → usa spatial.convex_hull.
+5k. Si el objetivo pide zonas de influencia, áreas de cobertura o teselas de Voronoi a partir de una capa de puntos → usa spatial.voronoi.
+5l. Si el objetivo pide medir longitudes, áreas, perímetros o estadísticas geométricas de una capa → usa spatial.measure.
+5m. Si el objetivo pide superponer dos capas de polígonos (intersección, unión o diferencia a nivel de capa completa) → usa spatial.overlay.
+5n. Si el objetivo pide para cada feature de una capa cuál es el feature más cercano de otra capa → usa spatial.nearest_neighbor.
+5o. Si el objetivo pide features de una capa que estén a menos de X metros de los features de otra capa → usa spatial.within_distance.
+5p. Si el objetivo menciona validez geométrica, geometrías inválidas, solapamientos topológicos o integridad de una capa → usa spatial.topology_check.
 6. Si el objetivo menciona inventario, listado, campos específicos de una capa, o nombra explícitamente una capa del catálogo → usa spatial.query_layer o spatial.summary.
 7. SOLO si el objetivo es verdaderamente genérico ("qué hay en esta zona", "resume el entorno", "dame contexto general") y NO menciona ninguna capa, operación, ni término del dominio → usa spatial.context_pack.
 
@@ -79,6 +94,91 @@ Para spatial.aggregate:
 - group_by acepta hasta 4 campos de filter_fields de la capa.
 - aggs es opcional; sin él devuelve solo COUNT(*) por grupo.
 - success_criteria recomendada: {"path": "data.groups", "non_empty": true}
+
+Para spatial.dissolve:
+- Úsalo cuando el objetivo pide fusionar o disolver geometrías agrupadas por un campo.
+- dissolve_field debe ser un campo de filter_fields de la capa.
+- include_geom=true incluye la geometría fusionada (GeoJSON) en cada grupo.
+- aggs permite calcular sum/avg/min/max de campos numéricos sobre los features fusionados.
+- success_criteria recomendada: {"path": "data.dissolved_features", "non_empty": true}
+
+Para spatial.count_within:
+- source_layer es la capa contenedora (polígonos); target_layer es la capa a contar.
+- min_count filtra solo features source que contienen al menos N elementos.
+- success_criteria recomendada: {"path": "data.items", "non_empty": true}
+
+Para spatial.spatial_join:
+- join_type "contains": source debe estar dentro de un feature de join_layer.
+- join_type "nearest": une al feature más cercano de join_layer (devuelve join_distance_m).
+- join_fields lista los campos de join_layer a adjuntar; deben estar en filter_fields.
+- success_criteria recomendada: {"path": "data.items", "non_empty": true}
+
+Para spatial.clip:
+- Requiere source_layer + (clip_layer+clip_id) O bbox como geometría de recorte.
+- Devuelve clipped_area_m2 y clipped_length_m por feature recortado.
+- success_criteria recomendada: {"path": "data.items", "non_empty": true}
+
+Para spatial.difference:
+- Requiere source_layer + source_id (feature base) + subtract_layer.
+- Devuelve difference_area_m2 (área residual) y original_area_m2.
+- success_criteria recomendada: {"path": "data.difference_area_m2", "gt": 0}
+
+Para spatial.grid_stats:
+- Requiere layer + bbox. cell_size_m controla la resolución (defecto 100 m).
+- Devuelve celdas no vacías con count y opcionalmente agg_sum.
+- success_criteria recomendada: {"path": "data.cells", "non_empty": true}
+
+Para spatial.cluster_dbscan:
+- eps_m es el radio de vecindad en metros. min_points es el mínimo de vecinos para formar cluster.
+- cluster_id = -1 → outlier/ruido. cluster_count es el número de clusters reales.
+- success_criteria recomendada: {"path": "data.cluster_count", "gt": 0}
+
+Para spatial.centroid:
+- Úsalo cuando el objetivo pide coordenadas centrales, centroides o puntos representativos de geometrías.
+- Devuelve centroid_lon y centroid_lat por cada feature, junto con sus atributos.
+- Acepta bbox y filters para limitar la consulta.
+- success_criteria recomendada: {"path": "data.items", "non_empty": true}
+
+Para spatial.convex_hull:
+- Úsalo cuando el objetivo pide la envolvente exterior, el contorno que rodea todos los features de una capa.
+- Devuelve hull_area_m2, feature_count, centroide y opcionalmente hull_geom (GeoJSON).
+- Acepta bbox y filters para restringir qué features se incluyen.
+- success_criteria recomendada: {"path": "data.hull_area_m2", "gt": 0}
+
+Para spatial.voronoi:
+- Solo aplicable a capas de puntos (geometry_kind="point").
+- Devuelve un polígono de Voronoi por cada punto, con su voronoi_area_m2.
+- include_geom=true incluye la geometría GeoJSON de cada polígono.
+- success_criteria recomendada: {"path": "data.polygon_count", "gt": 0}
+
+Para spatial.measure:
+- Detecta automáticamente el tipo de geometría (line → longitud, polygon → área/perímetro, point → count).
+- group_by permite agrupar métricas por un campo de filter_fields.
+- Todas las medidas están en metros / m².
+- success_criteria recomendada: {"path": "data.totals", "non_empty": true} (sin group_by) o {"path": "data.groups", "non_empty": true} (con group_by)
+
+Para spatial.overlay:
+- mode: "intersect" (zona común), "union" (todo junto), "difference" (A menos B).
+- Aplica ST_Union sobre cada capa antes de operar → devuelve un único resultado geométrico.
+- bbox muy recomendado para limitar el cómputo.
+- include_geom=true para obtener el GeoJSON del resultado.
+- success_criteria recomendada: {"path": "data.is_empty", "equals": false}
+
+Para spatial.nearest_neighbor:
+- source_layer: capa origen; neighbor_layer: capa en la que buscar el vecino.
+- neighbor_fields: campos de neighbor_layer a incluir en el resultado (deben estar en filter_fields).
+- max_distance_m: si se especifica, omite pares cuyo vecino esté más lejos.
+- success_criteria recomendada: {"path": "data.pair_count", "gt": 0}
+
+Para spatial.within_distance:
+- Requiere source_layer, reference_layer y distance_m.
+- include_min_distance=true añade la distancia mínima al vecino más cercano de reference_layer.
+- success_criteria recomendada: {"path": "data.total_within_distance", "gt": 0}
+
+Para spatial.topology_check:
+- Siempre devuelve is_topologically_clean (true/false) y invalid_geometry_count.
+- check_overlaps=true activa la detección de solapamientos (costoso en capas grandes, usar con bbox).
+- success_criteria recomendada: {"path": "data.is_topologically_clean", "equals": true}
 
 NUNCA uses spatial.context_pack cuando:
 - El objetivo menciona una capa por nombre (cualquiera que aparezca en gis_layers_catalog o en agent_system_prompt).
@@ -134,11 +234,13 @@ Si execution_context está presente:
 - Mantén el plan reparado lo más corto posible.
 
 Si session_context está presente:
-- session_context contiene los turnos anteriores de la misma conversación: goal, final_text y tools_used de cada run previo.
+- session_context contiene los turnos anteriores de la misma conversación: goal, ok, final_text y tools_used de cada run previo.
 - Úsalo para entender el hilo conversacional y evitar repetir análisis ya realizados.
 - Si el usuario hace una pregunta de seguimiento ("¿y los de tipo X?", "ahora filtra por…", "usa el mismo bbox"), infiere el contexto del turno anterior.
 - No menciones explícitamente que tienes un historial; simplemente planifica teniendo en cuenta lo que ya se sabe.
 - Si el turno anterior usó un bbox concreto y el nuevo goal no especifica uno diferente, reutiliza ese bbox.
+- Si un turno tiene ok=false: ese intento falló. No repitas las mismas tools con los mismos args. Propón una estrategia alternativa o ajusta los parámetros.
+- Si tools_tried aparece (en lugar de tools_used): son las tools que se ejecutaron en un turno fallido, útil para evitar repetirlas sin cambios.
 """
 
 
@@ -164,6 +266,8 @@ def _build_session_context(run) -> Optional[List[Dict[str, Any]]]:
     """
     Recupera los últimos runs de la misma sesión (excluyendo el actual)
     y devuelve un resumen condensado para el planner.
+    Incluye tanto runs exitosos como fallidos para que el planner evite
+    repetir estrategias que ya fallaron en la misma conversación.
     """
     session_id = getattr(run, "session_id", "") or ""
     if not session_id:
@@ -175,25 +279,39 @@ def _build_session_context(run) -> Optional[List[Dict[str, Any]]]:
             RunModel.objects.filter(
                 agent=run.agent,
                 session_id=session_id,
-                status="succeeded",
+                status__in=["succeeded", "failed"],
             )
             .exclude(pk=run.pk)
             .order_by("-created_at")[:5]
         )
         history = []
         for prev in reversed(list(previous)):
+            succeeded = prev.status == "succeeded"
             entry: Dict[str, Any] = {
                 "run_id": prev.pk,
                 "goal": (prev.input_json or {}).get("goal", ""),
-                "final_text": (prev.final_text or "")[:500],
+                "ok": succeeded,
             }
             out = prev.output_json or {}
-            tools_used = [
-                s.get("name") for s in out.get("executed_outputs", [])
-                if s.get("type") == "tool" and s.get("ok")
-            ]
-            if tools_used:
-                entry["tools_used"] = tools_used
+            executed = out.get("executed_outputs", [])
+            if succeeded:
+                entry["final_text"] = (prev.final_text or "")[:500]
+                tools_used = [
+                    s.get("name") for s in executed
+                    if s.get("type") == "tool" and s.get("ok")
+                ]
+                if tools_used:
+                    entry["tools_used"] = tools_used
+            else:
+                tools_tried = [
+                    s.get("name") for s in executed
+                    if s.get("type") == "tool"
+                ]
+                if tools_tried:
+                    entry["tools_tried"] = tools_tried
+                error = (prev.error or "").strip()
+                if error:
+                    entry["error"] = error[:200]
             history.append(entry)
         return history if history else None
     except Exception:

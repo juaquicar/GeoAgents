@@ -17,26 +17,61 @@ def classify_goal_domain(goal: str, tools_used: Sequence[str] | None = None) -> 
     normalized = normalize_goal(goal)
     tools_used = list(tools_used or [])
 
-    if "spatial.network_trace" in tools_used or any(
-        token in normalized for token in (
-            "traza", "trace", "red", "network", "ruta", "grafo", "topolog"
-        )
+    # Red / topología
+    if any(t in tools_used for t in ("spatial.network_trace", "spatial.route_cost", "spatial.network_service_area")) or any(
+        token in normalized for token in ("traza", "trace", "network", "grafo", "topolog", "ruta de red", "conectividad")
     ):
         return "network"
-    if "spatial.intersects" in tools_used or any(
-        token in normalized for token in ("interse", "solap", "cruce", "contiene")
+
+    # Relaciones espaciales entre capas
+    if any(t in tools_used for t in ("spatial.intersects", "spatial.overlay", "spatial.spatial_join")) or any(
+        token in normalized for token in ("interse", "solap", "cruce", "contiene", "superpone", "overlay", "join")
     ):
         return "spatial_relation"
-    if "spatial.context_pack" in tools_used or any(
-        token in normalized for token in ("contexto", "entorno", "overview", "resumen")
+
+    # Análisis de densidad / clustering
+    if any(t in tools_used for t in ("spatial.cluster_dbscan", "spatial.grid_stats")) or any(
+        token in normalized for token in ("cluster", "hotspot", "densidad", "mapa de calor", "concentra")
     ):
-        return "spatial_context"
-    if "spatial.nearby" in tools_used or any(
-        token in normalized for token in ("cerca", "proxim", "nearby")
+        return "density_clustering"
+
+    # Proximidad / distancia
+    if any(t in tools_used for t in ("spatial.nearby", "spatial.within_distance", "spatial.nearest_neighbor", "spatial.buffer")) or any(
+        token in normalized for token in ("cerca", "proxim", "nearby", "mas cercano", "mas cercana", "radio", "buffer")
     ):
         return "proximity"
-    if "spatial.query_layer" in tools_used:
+
+    # Medición / geometría
+    if any(t in tools_used for t in ("spatial.measure", "spatial.convex_hull", "spatial.centroid", "spatial.dissolve",
+                                      "spatial.voronoi", "spatial.difference")) or any(
+        token in normalized for token in ("longitud", "area total", "superficie", "centroide", "envolvente", "voronoi")
+    ):
+        return "geometry_analysis"
+
+    # Estadística / agregación
+    if any(t in tools_used for t in ("spatial.aggregate", "spatial.count_within")) or any(
+        token in normalized for token in ("por tipo", "por categoria", "cuantos hay", "estadistic", "agrup")
+    ):
+        return "statistical_analysis"
+
+    # Calidad / topología
+    if "spatial.topology_check" in tools_used or any(
+        token in normalized for token in ("topolog", "invalida", "integridad", "validez", "errores geomet")
+    ):
+        return "quality_check"
+
+    # Contexto / overview
+    if "spatial.context_pack" in tools_used or any(
+        token in normalized for token in ("contexto", "entorno", "overview", "resumen general")
+    ):
+        return "spatial_context"
+
+    # Inspección / consulta
+    if "spatial.query_layer" in tools_used or any(
+        token in normalized for token in ("inventario", "listar", "que campos", "registros de")
+    ):
         return "layer_inspection"
+
     return "generic_spatial"
 
 

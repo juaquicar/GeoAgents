@@ -16,11 +16,24 @@ def build_planner_heuristics(run, payload: Dict[str, object]) -> Dict[str, objec
     try:
         from agents_core.models import EpisodePattern
 
-        patterns = EpisodePattern.objects.filter(domain=domain).order_by(
-            "-success_rate",
-            "-sample_size",
-        )[:3]
-        for pattern in patterns:
+        # Primero: patrones con goal_signature exacto (alta confianza)
+        exact = list(
+            EpisodePattern.objects.filter(
+                goal_signature=signature,
+            ).order_by("-success_rate", "-sample_size")[:3]
+        )
+        seen_pks = {p.pk for p in exact}
+
+        # Fallback: patrones del mismo dominio si hay menos de 3 exactos
+        domain_fill = []
+        if len(exact) < 3:
+            domain_fill = list(
+                EpisodePattern.objects.filter(domain=domain)
+                .exclude(pk__in=seen_pks)
+                .order_by("-success_rate", "-sample_size")[: 3 - len(exact)]
+            )
+
+        for pattern in exact + domain_fill:
             pattern_hints.append(
                 {
                     "goal_signature": pattern.goal_signature,
