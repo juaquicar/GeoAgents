@@ -6,8 +6,8 @@
   <title>GeoAgents</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" />
+  <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     [x-cloak] { display: none !important; }
@@ -36,10 +36,28 @@
     .bm-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; flex-shrink: 0; }
     .bm-item.active .bm-dot { background: #818cf8; }
 
-    /* Bbox overlay */
-    .bbox-info { font-size: 11px; color: #94a3b8; background: rgba(15,23,42,0.8);
-      padding: 3px 8px; border-radius: 4px; pointer-events: none; white-space: nowrap; }
-    .leaflet-control-bbox { background: transparent !important; border: none !important; box-shadow: none !important; }
+    /* MapLibre popup dark theme */
+    .maplibregl-popup-content {
+      background: #1e293b; color: #e2e8f0;
+      border: 1px solid #334155; border-radius: 8px;
+      padding: 8px 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); font-size: 12px;
+    }
+    .maplibregl-popup-tip { border-top-color: #1e293b !important; border-bottom-color: #1e293b !important; }
+    .maplibregl-popup-close-button { color: #64748b; font-size: 16px; padding: 2px 6px; }
+    .maplibregl-popup-close-button:hover { color: #f1f5f9; background: transparent; }
+    /* MapLibre navigation controls dark theme */
+    .maplibregl-ctrl-group {
+      background: #1e293b !important; border: 1px solid #334155 !important;
+      border-radius: 8px !important; overflow: hidden;
+    }
+    .maplibregl-ctrl-group button {
+      background: #1e293b !important; color: #94a3b8 !important;
+      border-bottom-color: #334155 !important;
+    }
+    .maplibregl-ctrl-group button:hover { background: #334155 !important; }
+    .maplibregl-ctrl-group button + button { border-top: 1px solid #334155; }
+    .maplibregl-ctrl-attrib { display: none !important; }
+    .maplibregl-ctrl-logo { display: none !important; }
   </style>
   <script>
     tailwind.config = {
@@ -212,9 +230,16 @@
       <div class="flex-1 relative">
         <div id="chat-map" class="absolute inset-0"></div>
 
+        <!-- 3D toggle -->
+        <button @click="toggleChatMap3D()"
+          class="absolute top-3 left-3 z-10 bg-slate-800/90 border text-xs px-2.5 py-1 rounded-lg hover:bg-slate-700 transition-colors shadow-lg"
+          :class="chatMap3D ? 'text-indigo-300 border-indigo-500' : 'text-slate-300 border-slate-600'">
+          <span x-text="chatMap3D ? '2D' : '3D'"></span>
+        </button>
+
         <!-- Layer legend overlay -->
         <div x-show="chat.agentId && (chatMapLegend.length > 0 || chatMapFetching || chatMapZoomWarning)"
-          class="absolute bottom-3 left-3 z-[1000] bg-slate-900/90 border border-slate-700 rounded-xl shadow-lg overflow-hidden"
+          class="absolute bottom-3 left-3 z-10 bg-slate-900/90 border border-slate-700 rounded-xl shadow-lg overflow-hidden"
           style="min-width:170px;max-width:220px">
           <!-- Header -->
           <div class="flex items-center justify-between px-3 py-2 border-b border-slate-700">
@@ -381,7 +406,6 @@
                 </div>
               </div>
               <p class="text-xs text-slate-400 mb-3 line-clamp-2" x-text="agent.system_prompt || '(sin prompt)'"></p>
-              <!-- Info GIS -->
               <div x-show="(agent.gis_db_connections||[]).length > 0"
                 class="flex items-center gap-2 mb-2 text-xs text-emerald-400">
                 <span>🗄</span>
@@ -458,20 +482,16 @@
               <div class="bg-slate-900 rounded-lg overflow-hidden border border-slate-700">
                 <template x-for="group in toolGroups" :key="group.prefix">
                   <div>
-                    <!-- Cabecera de grupo -->
                     <div class="flex items-center justify-between px-3 py-1.5 bg-slate-800 border-b border-slate-700">
                       <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide" x-text="group.prefix"></span>
                       <div class="flex items-center gap-3">
                         <span class="text-xs text-slate-600">
                           <span x-text="group.tools.filter(t => (agentForm.data.tool_allowlist||[]).includes(t)).length"></span>/<span x-text="group.tools.length"></span>
                         </span>
-                        <button @click="selectGroupTools(group.tools)"
-                          class="text-xs text-indigo-400 hover:text-indigo-300">todas</button>
-                        <button @click="deselectGroupTools(group.tools)"
-                          class="text-xs text-slate-500 hover:text-slate-300">ninguna</button>
+                        <button @click="selectGroupTools(group.tools)" class="text-xs text-indigo-400 hover:text-indigo-300">todas</button>
+                        <button @click="deselectGroupTools(group.tools)" class="text-xs text-slate-500 hover:text-slate-300">ninguna</button>
                       </div>
                     </div>
-                    <!-- Tools del grupo -->
                     <div class="grid grid-cols-2 gap-0 p-2">
                       <template x-for="t in group.tools" :key="t">
                         <label class="flex items-center gap-2 cursor-pointer px-2 py-1 rounded hover:bg-slate-800">
@@ -589,7 +609,6 @@
                   <span x-show="agentForm.inspecting" class="animate-pulse">Inspeccionando…</span>
                 </button>
               </div>
-              <!-- Lista de capas -->
               <div x-show="(agentForm.data.gis_layers_catalog||[]).length > 0"
                 class="max-h-32 overflow-y-auto bg-slate-900 rounded-lg p-2 space-y-0.5">
                 <template x-for="layer in (agentForm.data.gis_layers_catalog||[])" :key="layer.name">
@@ -661,7 +680,6 @@
       <div class="px-6 py-4 border-b border-slate-700 bg-slate-800 space-y-2">
         <div class="flex items-center gap-3 flex-wrap">
           <h2 class="text-base font-semibold shrink-0">Catálogo de capas GIS</h2>
-          <!-- Selector de agente -->
           <select x-model="layersAgentId"
             class="bg-slate-700 border border-slate-600 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 max-w-[220px]">
             <option value="" x-show="hasGlobalGis">— BD global (settings) —</option>
@@ -677,7 +695,6 @@
         <input x-model="layerSearch" placeholder="Buscar capa…"
           class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500" />
       </div>
-      <!-- Sin catálogo disponible -->
       <div x-show="activeLayersCatalog.length === 0 && !layerSearch"
         class="flex flex-col items-center justify-center flex-1 text-slate-500 gap-2">
         <div class="text-4xl">🗺️</div>
@@ -721,7 +738,7 @@
       <div class="px-6 py-3 border-b border-slate-700 bg-slate-800 flex items-center gap-3 shrink-0 flex-wrap">
         <h2 class="text-base font-semibold shrink-0">Mapa</h2>
 
-        <!-- Selector de agente (BD y catálogo de capas) -->
+        <!-- Selector de agente -->
         <div class="flex items-center gap-2 shrink-0">
           <span class="text-xs text-slate-500">Agente:</span>
           <select x-model="mapAgentId" @change="onMapAgentChange()"
@@ -739,8 +756,15 @@
         <span class="text-xs text-slate-400" x-text="`${mapFeatures.length} features`"></span>
         <span class="text-xs font-mono px-2 py-0.5 rounded"
               :class="mapZoom >= 18 ? 'bg-green-900 text-green-300' : 'bg-slate-700 text-slate-400'"
-              x-text="`z${mapZoom}`"></span>
+              x-text="`z${mapZoom.toFixed(1)}`"></span>
+
         <div class="ml-auto flex gap-2">
+          <!-- 3D toggle -->
+          <button @click="toggleMap3D()"
+            class="border text-xs px-2.5 py-1.5 rounded-lg transition-colors"
+            :class="map3D ? 'bg-indigo-700 border-indigo-500 text-indigo-200' : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'">
+            <span x-text="map3D ? '2D' : '3D'"></span>
+          </button>
           <button @click="clearMapFeatures()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1.5 rounded-lg">🗑️ Limpiar</button>
           <button @click="fitMapToFeatures()" x-show="mapFeatures.length > 0"
             class="bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-1.5 rounded-lg">⊞ Ajustar</button>
@@ -758,9 +782,8 @@
         <div id="map" class="absolute inset-0"></div>
 
         <!-- ── PANEL DE CAPAS BD ────────────────────────── -->
-        <div class="absolute bottom-6 left-2 z-[1000]" style="min-width:200px;max-width:260px;pointer-events:none">
+        <div class="absolute bottom-6 left-2 z-10" style="min-width:200px;max-width:260px;pointer-events:none">
           <div style="pointer-events:auto">
-            <!-- Toggle button -->
             <button @click="mapLayerPanelOpen = !mapLayerPanelOpen"
               class="flex items-center gap-1.5 w-full bg-slate-800 bg-opacity-95 border border-slate-600 rounded-lg px-3 py-1.5 text-xs shadow-lg hover:bg-slate-700 transition-colors">
               <span>🗂</span>
@@ -768,31 +791,25 @@
               <span x-show="mapDbLayers.some(l => l.loading)" class="text-slate-400 animate-pulse">⟳</span>
               <span class="ml-auto text-slate-400" x-text="mapLayerPanelOpen ? '▴' : '▾'"></span>
             </button>
-            <!-- Panel -->
             <div x-show="mapLayerPanelOpen" x-cloak
               class="bg-slate-800 bg-opacity-95 border border-slate-600 rounded-lg shadow-xl mt-1 overflow-hidden"
               style="max-height:55vh;overflow-y:auto">
-              <!-- Agente activo / fuente de capas -->
               <div class="px-3 py-1.5 border-b border-slate-700 text-xs text-slate-500 truncate"
                 x-text="mapAgentId ? (agents.find(a=>a.id==mapAgentId)?.name || 'Agente') : (hasGlobalGis ? 'BD global (settings)' : 'Sin fuente configurada')">
               </div>
-              <!-- Sin BD global ni agente seleccionado -->
               <div x-show="!mapAgentId && !hasGlobalGis"
                 class="px-3 py-2 text-xs text-amber-400 flex items-center gap-1.5">
                 <span>⚠</span><span>Selecciona un agente con catálogo de capas.</span>
               </div>
-              <!-- Sin catálogo cuando hay agente sin capas -->
               <div x-show="mapAgentId && mapDbLayers.length === 0"
                 class="px-3 py-2 text-xs text-amber-400 flex items-center gap-1.5">
                 <span>⚠</span><span>El agente no tiene catálogo. Usa "Inspeccionar" en la configuración.</span>
               </div>
-              <!-- Aviso zoom < 18 -->
               <div x-show="mapZoom < 18 && mapDbLayers.length > 0"
                 class="px-3 py-2 text-xs text-amber-400 border-b border-slate-700 flex items-center gap-1.5">
                 <span>⚠</span>
                 <span>Zoom in hasta ≥ 18 para ver capas</span>
               </div>
-              <!-- Lista de capas -->
               <div x-show="mapZoom >= 18 && mapDbLayers.length > 0" class="divide-y divide-slate-700">
                 <template x-for="layer in mapDbLayers" :key="layer.name">
                   <label class="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-700 cursor-pointer transition-colors">
@@ -834,132 +851,151 @@
 <script>
 // ── BASEMAP CATALOG ──────────────────────────────────────
 const BASEMAPS = [
-  { name:"ESRI World Imagery", type:"TMS", bm_url:"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", bm_max_zoom_native:19, bm_attribution:"&copy; <a href='https://www.esri.com'>ESRI</a> World Imagery", bm_category:"ESRI" },
-  { name:"Google Maps", type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
-  { name:"Google Satélite Hybrid", type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
-  { name:"Google Satélite", type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
-  { name:"CARTO Light", type:"TMS", bm_url:"https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", bm_max_zoom_native:25, bm_attribution:"&copy; OpenStreetMap, &copy; CARTO", bm_category:"CARTO" },
-  { name:"CARTO Positron Labels", type:"TMS", bm_url:"https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap, &copy; CARTO", bm_category:"CARTO" },
-  { name:"CARTO Positron", type:"TMS", bm_url:"https://basemaps.cartocdn.com/rastertiles/light_nolabels/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap, &copy; CARTO", bm_category:"CARTO" },
-  { name:"IGN Catastro", type:"TMS", bm_url:"https://www.ign.es/wmts/ign-base/?Request=GetTile&service=WMTS&layer=IGNBaseTodo&format=image/jpeg&SRS=EPSG:4326&TileMatrixSet=GoogleMapsCompatible&TileMatrix={z}&TileRow={y}&tileCol={x}", bm_max_zoom_native:20, bm_attribution:"&copy; IGN", bm_category:"IGN" },
-  { name:"IGN Catastro B/N", type:"TMS", bm_url:"https://www.ign.es/wmts/ign-base/?Request=GetTile&service=WMTS&layer=IGNBase-gris&format=image/jpeg&SRS=EPSG:4326&TileMatrixSet=GoogleMapsCompatible&TileMatrix={z}&TileRow={y}&tileCol={x}", bm_max_zoom_native:20, bm_attribution:"&copy; IGN", bm_category:"IGN" },
-  { name:"IGN Raster", type:"WMS", bm_url:"http://www.ign.es/wms-inspire/mapa-raster?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"mtn_rasterizado", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"IGN" },
-  { name:"PNOA Máx. Actualidad", type:"TMS", bm_url:"http://www.ign.es/wmts/pnoa-ma?&SERVICE=WMTS&REQUEST=GetTile&LAYER=OI.OrthoimageCoverage&FORMAT=image/png&TILEMATRIXSET=GoogleMapsCompatible&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"ORTOFOTO" },
-  { name:"OSM General", type:"TMS", bm_url:"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
-  { name:"OSM B/N", type:"TMS", bm_url:"http://tiles.wmflabs.org/bw-mapnik/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
-  { name:"OSM Mundo", type:"WMS", bm_url:"http://ows.mundialis.de/services/service?", conf_version:"1.1.1", conf_format:"image/png", conf_layers:"SRTM30-Colored-Hillshade", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
-  { name:"Catastro INSPIRE Building", type:"WMS", bm_url:"http://ovc.catastro.meh.es/cartografia/INSPIRE/spadgcwms.aspx?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"BU.Building", bm_max_zoom_native:20, bm_attribution:"Dirección General del Catastro", bm_category:"INSPIRE" },
-  { name:"IGN Unidades Administrativas", type:"WMS", bm_url:"http://ovc.catastro.meh.es/Cartografia/WMS/ServidorWMS.aspx?", conf_version:"1.1.1", conf_format:"image/png", conf_layers:"Catastro", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"IGN" },
-  { name:"Catastro Navarra", type:"WMS", bm_url:"https://inspire.navarra.es/services/CP/wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"CP:CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
-  { name:"Catastro País Vasco - Álava", type:"WMS", bm_url:"https://geo.araba.eus/WMS_INSPIRE_CP", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"CP.CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
-  { name:"Catastro País Vasco - Guipúzcoa", type:"WMS", bm_url:"https://b5m.gipuzkoa.eus/inspire/wms/gipuzkoa_wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"cp.CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
-  { name:"Catastro Portugal", type:"TMS", bm_url:"https://map.valentim.org/otmpt/{z}/{x}/{y}.png", bm_max_zoom_native:17, bm_attribution:"", bm_category:"INTERNACIONAL" },
-  { name:"Catastro Francia", type:"WMS", bm_url:"http://mapsref.brgm.fr/wxs/refcom-brgm/refign?VERSION=1.3.0", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"PARVEC_PARCELLE", bm_max_zoom_native:18, bm_attribution:"", bm_category:"INTERNACIONAL" },
-  { name:"Catastro Alemania TopoPlus", type:"WMS", bm_url:"https://sgx.geodatenzentrum.de/wms_topplus_open?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"web", bm_max_zoom_native:18, bm_attribution:"", bm_category:"INTERNACIONAL" },
-  { name:"GeoARBA - Buenos Aires", type:"WMS", bm_url:"https://geo.arba.gov.ar/geoserver/idera/wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"Grupo IDERA", bm_max_zoom_native:20, bm_attribution:"GeoARBA", bm_category:"INTERNACIONAL" },
+  { name:"ESRI World Imagery",       type:"TMS", bm_url:"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", bm_max_zoom_native:19, bm_attribution:"&copy; ESRI", bm_category:"ESRI" },
+  { name:"Google Maps",              type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
+  { name:"Google Satélite Hybrid",   type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
+  { name:"Google Satélite",          type:"TMS", bm_url:"https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", bm_max_zoom_native:18, bm_attribution:"&copy; Google", bm_category:"GOOGLE", subdomains:["mt0","mt1","mt2","mt3"] },
+  { name:"CARTO Light",              type:"TMS", bm_url:"https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", bm_max_zoom_native:25, bm_attribution:"&copy; CARTO", bm_category:"CARTO" },
+  { name:"CARTO Positron Labels",    type:"TMS", bm_url:"https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; CARTO", bm_category:"CARTO" },
+  { name:"CARTO Positron",           type:"TMS", bm_url:"https://basemaps.cartocdn.com/rastertiles/light_nolabels/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; CARTO", bm_category:"CARTO" },
+  { name:"IGN Catastro",             type:"TMS", bm_url:"https://www.ign.es/wmts/ign-base/?Request=GetTile&service=WMTS&layer=IGNBaseTodo&format=image/jpeg&SRS=EPSG:4326&TileMatrixSet=GoogleMapsCompatible&TileMatrix={z}&TileRow={y}&tileCol={x}", bm_max_zoom_native:20, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"IGN Catastro B/N",         type:"TMS", bm_url:"https://www.ign.es/wmts/ign-base/?Request=GetTile&service=WMTS&layer=IGNBase-gris&format=image/jpeg&SRS=EPSG:4326&TileMatrixSet=GoogleMapsCompatible&TileMatrix={z}&TileRow={y}&tileCol={x}", bm_max_zoom_native:20, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"IGN Raster",               type:"WMS", bm_url:"http://www.ign.es/wms-inspire/mapa-raster?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"mtn_rasterizado", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"PNOA Máx. Actualidad",     type:"TMS", bm_url:"http://www.ign.es/wmts/pnoa-ma?&SERVICE=WMTS&REQUEST=GetTile&LAYER=OI.OrthoimageCoverage&FORMAT=image/png&TILEMATRIXSET=GoogleMapsCompatible&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"ORTOFOTO" },
+  { name:"OSM General",              type:"TMS", bm_url:"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
+  { name:"OSM B/N",                  type:"TMS", bm_url:"http://tiles.wmflabs.org/bw-mapnik/{z}/{x}/{y}.png", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
+  { name:"OSM Mundo",                type:"WMS", bm_url:"http://ows.mundialis.de/services/service?", conf_version:"1.1.1", conf_format:"image/png", conf_layers:"SRTM30-Colored-Hillshade", bm_max_zoom_native:18, bm_attribution:"&copy; OpenStreetMap contributors", bm_category:"OSM" },
+  { name:"Catastro INSPIRE Building",type:"WMS", bm_url:"http://ovc.catastro.meh.es/cartografia/INSPIRE/spadgcwms.aspx?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"BU.Building", bm_max_zoom_native:20, bm_attribution:"DGCatastro", bm_category:"INSPIRE" },
+  { name:"IGN Unidades Adm.",        type:"WMS", bm_url:"http://ovc.catastro.meh.es/Cartografia/WMS/ServidorWMS.aspx?", conf_version:"1.1.1", conf_format:"image/png", conf_layers:"Catastro", bm_max_zoom_native:18, bm_attribution:"&copy; IGN", bm_category:"IGN" },
+  { name:"Catastro Navarra",         type:"WMS", bm_url:"https://inspire.navarra.es/services/CP/wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"CP:CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
+  { name:"Catastro País Vasco - Álava",type:"WMS",bm_url:"https://geo.araba.eus/WMS_INSPIRE_CP", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"CP.CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
+  { name:"Catastro País Vasco - Guipúzcoa",type:"WMS",bm_url:"https://b5m.gipuzkoa.eus/inspire/wms/gipuzkoa_wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"cp.CadastralParcel", bm_max_zoom_native:18, bm_attribution:"", bm_category:"ESPAÑA CCAA" },
+  { name:"Catastro Portugal",        type:"TMS", bm_url:"https://map.valentim.org/otmpt/{z}/{x}/{y}.png", bm_max_zoom_native:17, bm_attribution:"", bm_category:"INTERNACIONAL" },
+  { name:"Catastro Francia",         type:"WMS", bm_url:"http://mapsref.brgm.fr/wxs/refcom-brgm/refign?VERSION=1.3.0", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"PARVEC_PARCELLE", bm_max_zoom_native:18, bm_attribution:"", bm_category:"INTERNACIONAL" },
+  { name:"Catastro Alemania TopoPlus",type:"WMS",bm_url:"https://sgx.geodatenzentrum.de/wms_topplus_open?", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"web", bm_max_zoom_native:18, bm_attribution:"", bm_category:"INTERNACIONAL" },
+  { name:"GeoARBA - Buenos Aires",   type:"WMS", bm_url:"https://geo.arba.gov.ar/geoserver/idera/wms", conf_version:"1.3.0", conf_format:"image/png", conf_layers:"Grupo IDERA", bm_max_zoom_native:20, bm_attribution:"GeoARBA", bm_category:"INTERNACIONAL" },
 ];
 
-// Build a Leaflet layer from basemap config
-function buildBasemapLayer(bm) {
+// Build a MapLibre GL raster source config from basemap
+function buildBasemapSource(bm) {
   if (bm.type === 'WMS') {
-    return L.tileLayer.wms(bm.bm_url, {
-      layers: bm.conf_layers || '',
-      format: bm.conf_format || 'image/png',
-      version: bm.conf_version || '1.1.1',
-      transparent: true,
-      attribution: bm.bm_attribution || '',
-      maxZoom: bm.bm_max_zoom_native || 18,
-      maxNativeZoom: bm.bm_max_zoom_native || 18,
-    });
+    const sep = bm.bm_url.includes('?') ? '' : '?';
+    const ver = bm.conf_version || '1.1.1';
+    const crsParam = ver === '1.3.0' ? 'CRS=EPSG:3857' : 'SRS=EPSG:3857';
+    const url = `${bm.bm_url}${sep}SERVICE=WMS&VERSION=${ver}&REQUEST=GetMap` +
+      `&LAYERS=${encodeURIComponent(bm.conf_layers||'')}` +
+      `&FORMAT=${encodeURIComponent(bm.conf_format||'image/png')}` +
+      `&TRANSPARENT=TRUE&WIDTH=256&HEIGHT=256&${crsParam}&BBOX={bbox-epsg-3857}&STYLES=`;
+    return { type: 'raster', tiles: [url], tileSize: 256, maxzoom: bm.bm_max_zoom_native || 18 };
   }
-  const opts = {
-    attribution: bm.bm_attribution || '',
-    maxZoom: 22,
-    maxNativeZoom: bm.bm_max_zoom_native || 18,
-  };
-  if (bm.subdomains) opts.subdomains = bm.subdomains;
-  else if (bm.bm_url.includes('{s}')) opts.subdomains = ['a','b','c'];
-  return L.tileLayer(bm.bm_url, opts);
+  // TMS — expand subdomains into multiple tile URLs for load balancing
+  let tiles;
+  const subs = bm.subdomains || (bm.bm_url.includes('{s}') ? ['a','b','c'] : null);
+  if (subs) {
+    tiles = subs.map(s => bm.bm_url.replace('{s}', s));
+  } else {
+    tiles = [bm.bm_url];
+  }
+  return { type: 'raster', tiles, tileSize: 256, maxzoom: bm.bm_max_zoom_native || 18 };
 }
 
-// Custom Leaflet control: basemap switcher
-const BasemapSwitcherControl = L.Control.extend({
-  options: { position: 'topright' },
-  _currentIndex: 0,
-  _currentLayer: null,
+// Custom MapLibre GL control: basemap switcher
+class BasemapSwitcherControl {
+  constructor() { this._currentIndex = 0; }
 
   onAdd(map) {
     this._map = map;
-    const wrap = L.DomUtil.create('div', 'bm-control leaflet-bar');
-    L.DomEvent.disableClickPropagation(wrap);
-    L.DomEvent.disableScrollPropagation(wrap);
+    const wrap = document.createElement('div');
+    wrap.className = 'bm-control maplibregl-ctrl';
+    // Prevent map interaction propagation
+    ['click','dblclick','mousedown','wheel','touchstart'].forEach(ev =>
+      wrap.addEventListener(ev, e => e.stopPropagation())
+    );
 
     // Toggle button
-    this._toggle = L.DomUtil.create('div', 'bm-toggle', wrap);
-    this._toggleLabel = L.DomUtil.create('span', '', this._toggle);
-    this._toggleLabel.textContent = '🗺 Mapa base';
-    const arrow = L.DomUtil.create('span', '', this._toggle);
+    this._toggle = document.createElement('div');
+    this._toggle.className = 'bm-toggle';
+    this._toggleLabel = document.createElement('span');
+    this._toggleLabel.textContent = '🗺 ' + BASEMAPS[0].name;
+    const arrow = document.createElement('span');
     arrow.textContent = '▾';
     arrow.style.marginLeft = 'auto';
+    this._toggle.appendChild(this._toggleLabel);
+    this._toggle.appendChild(arrow);
+    wrap.appendChild(this._toggle);
 
-    // Panel
-    this._panel = L.DomUtil.create('div', 'bm-panel', wrap);
+    // Panel grouped by category
+    this._panel = document.createElement('div');
+    this._panel.className = 'bm-panel';
+    wrap.appendChild(this._panel);
 
-    // Build panel grouped by category
     const categories = {};
     BASEMAPS.forEach((bm, i) => {
       if (!categories[bm.bm_category]) categories[bm.bm_category] = [];
       categories[bm.bm_category].push({ bm, i });
     });
-
     for (const [cat, items] of Object.entries(categories)) {
-      const catEl = L.DomUtil.create('div', 'bm-category', this._panel);
+      const catEl = document.createElement('div');
+      catEl.className = 'bm-category';
       catEl.textContent = cat;
+      this._panel.appendChild(catEl);
       items.forEach(({ bm, i }) => {
-        const item = L.DomUtil.create('div', 'bm-item', this._panel);
-        const dot = L.DomUtil.create('span', 'bm-dot', item);
-        const label = L.DomUtil.create('span', '', item);
+        const item = document.createElement('div');
+        item.className = 'bm-item' + (i === 0 ? ' active' : '');
+        const dot = document.createElement('span');
+        dot.className = 'bm-dot';
+        const label = document.createElement('span');
         label.textContent = bm.name;
-        if (i === this._currentIndex) { item.classList.add('active'); }
-        L.DomEvent.on(item, 'click', () => this.selectBasemap(i, item));
-        item._bmIndex = i;
-        item._bmDot = dot;
+        item.appendChild(dot);
+        item.appendChild(label);
+        item.addEventListener('click', () => this.selectBasemap(i, item));
+        this._panel.appendChild(item);
       });
     }
 
-    // Set initial basemap
-    this._currentLayer = buildBasemapLayer(BASEMAPS[0]);
-    this._currentLayer.addTo(map);
-    this._toggleLabel.textContent = '🗺 ' + BASEMAPS[0].name;
+    // Apply initial basemap after style is ready
+    this._applyBasemap(0);
 
-    // Toggle panel
-    L.DomEvent.on(this._toggle, 'click', () => {
+    // Toggle panel open/close
+    this._toggle.addEventListener('click', () => {
       const open = this._panel.classList.toggle('open');
       arrow.textContent = open ? '▴' : '▾';
     });
-
-    // Close on map click
     map.on('click', () => {
       this._panel.classList.remove('open');
       arrow.textContent = '▾';
     });
 
     return wrap;
-  },
+  }
+
+  onRemove() { this._map = null; }
+
+  _applyBasemap(index) {
+    if (!this._map) return;
+    // Determine first non-basemap layer to insert before (keeps basemap at bottom)
+    const existingLayers = this._map.getStyle()?.layers || [];
+    const firstDataLayer = existingLayers.find(l => l.id !== 'basemap-layer');
+
+    if (this._map.getLayer('basemap-layer')) try { this._map.removeLayer('basemap-layer'); } catch {}
+    if (this._map.getSource('basemap-source')) try { this._map.removeSource('basemap-source'); } catch {}
+
+    this._map.addSource('basemap-source', buildBasemapSource(BASEMAPS[index]));
+    this._map.addLayer(
+      { id: 'basemap-layer', type: 'raster', source: 'basemap-source' },
+      firstDataLayer?.id   // insert before first data layer (or append if none)
+    );
+  }
 
   selectBasemap(index, clickedEl) {
-    if (this._currentLayer) this._map.removeLayer(this._currentLayer);
     this._currentIndex = index;
-    this._currentLayer = buildBasemapLayer(BASEMAPS[index]);
-    this._currentLayer.addTo(this._map);
-    this._currentLayer.bringToBack();
+    this._applyBasemap(index);
     this._toggleLabel.textContent = '🗺 ' + BASEMAPS[index].name;
-    // Update active state
     this._panel.querySelectorAll('.bm-item').forEach(el => el.classList.remove('active'));
     if (clickedEl) clickedEl.classList.add('active');
     this._panel.classList.remove('open');
-  },
-});
+  }
+}
 
 // ── ALPINE APP ───────────────────────────────────────────
 function app() {
@@ -982,26 +1018,27 @@ function app() {
     hasGlobalGis: false,
 
     // Standalone map
-    mapInstance: null, mapLayer: null, mapFeatures: [],
+    mapInstance: null, mapFeatures: [],
     mapGeoJsonInput: '', mapError: '',
     mapZoom: 13,
     mapBbox: { west: -3.71, south: 40.41, east: -3.70, north: 40.42 },
+    map3D: false,
     // Capas BD en pestaña Mapa
-    mapAgentId: '',           // agente seleccionado para las capas BD del mapa
-    mapDbLayers: [],          // [{name, color, visible, count, total, loading}]
+    mapAgentId: '',
+    mapDbLayers: [],
     mapLayerPanelOpen: true,
     _mapDbColorIdx: 0,
     _mapDbColorMap: {},
-    _mapDbLayerGroups: {},    // name -> L.LayerGroup
     _mapDbFetchTimer: null,
 
     // Chat map
-    chatMapInstance: null, chatMapLayer: null, chatMapFeatures: [],
-    chatMapLegend: [],   // [{name, color, count, loading}]
+    chatMapInstance: null, chatMapFeatures: [],
+    chatMapLegend: [],
     chatMapFetching: false,
     chatMapZoomWarning: false,
     chatLayerColorMap: {},
     _chatLayerColorIdx: 0,
+    chatMap3D: false,
 
     toast: { show: false, message: '', type: 'info', _timer: null },
 
@@ -1016,11 +1053,9 @@ function app() {
         if (v === 'tools') this.loadTools();
         if (v === 'layers') this.loadLayers();
       });
-      // Recargar capas base del chat cuando cambia el agente seleccionado
       this.$watch('chat.agentId', () => {
-        if (this.chatMapInstance) this.loadChatBaseLayers();
+        if (this.chatMapInstance?.isStyleLoaded()) this.loadChatBaseLayers();
       });
-      // Init chat map on first load
       if (this.token) { await this.$nextTick(); this.initChatMap(); }
     },
 
@@ -1063,51 +1098,191 @@ function app() {
     },
     setPage(p) { this.page = p; },
 
+    // ── MAP HELPERS ──────────────────────────────────────
+
+    // Register delegated click + cursor handlers on a map instance (called once per map)
+    _registerMapHandlers(mapInst) {
+      mapInst.on('click', (e) => {
+        const style = mapInst.getStyle();
+        if (!style) return;
+        const interactiveLayers = style.layers.map(l => l.id)
+          .filter(id => id !== 'basemap-layer' &&
+                        (id.endsWith('-fill') || id.endsWith('-line') || id.endsWith('-circle')));
+        if (!interactiveLayers.length) return;
+        const features = mapInst.queryRenderedFeatures(e.point, { layers: interactiveLayers });
+        if (!features.length) return;
+
+        const f = features[0];
+        const props = f.properties || {};
+        const sourceId = f.layer.source;
+        let label = '', color = '#6366f1';
+
+        if (sourceId === 'chat-highlight' || sourceId === 'map-highlight') {
+          const ft = props._feature_type || 'result';
+          label = { result:'Resultado', source:'Origen', neighbor:'Vecino', connection:'Conexión' }[ft] || ft;
+          color = this._getHighlightColor(ft);
+        } else if (sourceId.startsWith('chat-base-')) {
+          label = sourceId.replace('chat-base-', '');
+          color = this.chatLayerColorMap[label] || '#6366f1';
+        } else if (sourceId.startsWith('mapdb-')) {
+          label = sourceId.replace('mapdb-', '');
+          color = this._mapDbColorMap[label] || '#6366f1';
+        } else if (sourceId === 'chat-manual' || sourceId === 'map-manual') {
+          label = 'Feature';
+          color = '#6366f1';
+        }
+
+        const html = Object.entries(props)
+          .filter(([k]) => !k.startsWith('_') && !k.endsWith('_geojson'))
+          .slice(0, 15)
+          .map(([k,v]) => `<b>${k}:</b> ${v ?? ''}`)
+          .join('<br>');
+
+        if (html) {
+          new maplibregl.Popup({ maxWidth: '280px' })
+            .setLngLat(e.lngLat)
+            .setHTML(`<div style="font-size:11px;max-height:200px;overflow:auto">` +
+              `<b style="color:${color}">${label}</b><br>${html}</div>`)
+            .addTo(mapInst);
+        }
+      });
+
+      mapInst.on('mousemove', (e) => {
+        const style = mapInst.getStyle();
+        if (!style) return;
+        const interactiveLayers = style.layers.map(l => l.id)
+          .filter(id => id !== 'basemap-layer' &&
+                        (id.endsWith('-fill') || id.endsWith('-line') || id.endsWith('-circle')));
+        if (!interactiveLayers.length) { mapInst.getCanvas().style.cursor = ''; return; }
+        const features = mapInst.queryRenderedFeatures(e.point, { layers: interactiveLayers });
+        mapInst.getCanvas().style.cursor = features.length ? 'pointer' : '';
+      });
+    },
+
+    _getHighlightColor(featureType) {
+      return { result:'#facc15', source:'#22c55e', neighbor:'#f97316', connection:'#e2e8f0' }[featureType] || '#facc15';
+    },
+
+    // Remove all MapLibre layers and sources whose IDs start with prefix
+    _clearMapLayersWithPrefix(mapInst, prefix) {
+      if (!mapInst?.isStyleLoaded()) return;
+      const style = mapInst.getStyle();
+      const layerIds = (style.layers || []).map(l => l.id).filter(id => id.startsWith(prefix));
+      layerIds.forEach(id => { try { mapInst.removeLayer(id); } catch {} });
+      const sourceIds = Object.keys(style.sources || {}).filter(id => id.startsWith(prefix));
+      sourceIds.forEach(id => { try { mapInst.removeSource(id); } catch {} });
+    },
+
+    // Add GeoJSON source + fill/line/circle layers to a map
+    _addGeoJsonLayers(mapInst, sourceId, fc, paintFill, paintLine, paintCircle, layoutOverride) {
+      if (mapInst.getSource(sourceId)) {
+        mapInst.getSource(sourceId).setData(fc);
+        ['fill','line','circle'].forEach(t => {
+          const lid = `${sourceId}-${t}`;
+          if (mapInst.getLayer(lid) && layoutOverride) {
+            try { mapInst.setLayoutProperty(lid, 'visibility', layoutOverride.visibility || 'visible'); } catch {}
+          }
+        });
+        return;
+      }
+      mapInst.addSource(sourceId, { type: 'geojson', data: fc });
+      mapInst.addLayer({ id: `${sourceId}-fill`, type: 'fill', source: sourceId,
+        filter: ['match', ['geometry-type'], ['Polygon','MultiPolygon'], true, false],
+        paint: paintFill, layout: layoutOverride || {} });
+      mapInst.addLayer({ id: `${sourceId}-line`, type: 'line', source: sourceId,
+        filter: ['match', ['geometry-type'], ['LineString','MultiLineString','Polygon','MultiPolygon'], true, false],
+        paint: paintLine, layout: layoutOverride || {} });
+      mapInst.addLayer({ id: `${sourceId}-circle`, type: 'circle', source: sourceId,
+        filter: ['match', ['geometry-type'], ['Point','MultiPoint'], true, false],
+        paint: paintCircle, layout: layoutOverride || {} });
+    },
+
+    // Collect all coordinate pairs from a GeoJSON geometry
+    _collectCoords(geometry, coords) {
+      if (!geometry) return;
+      const t = geometry.type;
+      if (t === 'Point') { coords.push(geometry.coordinates); }
+      else if (t === 'MultiPoint' || t === 'LineString') { geometry.coordinates.forEach(c => coords.push(c)); }
+      else if (t === 'MultiLineString' || t === 'Polygon') { geometry.coordinates.forEach(r => r.forEach(c => coords.push(c))); }
+      else if (t === 'MultiPolygon') { geometry.coordinates.forEach(p => p.forEach(r => r.forEach(c => coords.push(c)))); }
+      else if (t === 'GeometryCollection') { geometry.geometries.forEach(g => this._collectCoords(g, coords)); }
+    },
+
+    // Fit map to an array of GeoJSON features
+    _fitToFeatures(mapInst, features, padding, maxZoom) {
+      if (!features.length) return;
+      try {
+        const coords = [];
+        features.forEach(f => this._collectCoords(f.geometry, coords));
+        if (!coords.length) return;
+        const lngs = coords.map(c => c[0]), lats = coords.map(c => c[1]);
+        mapInst.fitBounds(
+          [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+          { padding: padding || 40, maxZoom: maxZoom || 19, duration: 600 }
+        );
+      } catch {}
+    },
+
+    // Run fn when map style is ready (handles async load)
+    _runWhenMapReady(mapInst, fn) {
+      if (!mapInst) return;
+      if (mapInst.isStyleLoaded()) { fn(); return; }
+      mapInst.once('load', fn);
+    },
+
     // ── CHAT MAP ─────────────────────────────────────────
     initChatMap() {
-      if (this.chatMapInstance) { this.chatMapInstance.invalidateSize(); return; }
+      if (this.chatMapInstance) { this.chatMapInstance.resize(); return; }
       const el = document.getElementById('chat-map');
       if (!el) return;
-      this.chatMapInstance = L.map('chat-map').setView([40.416, -3.703], 16);
-      new BasemapSwitcherControl().addTo(this.chatMapInstance);
-      this.chatMapLayer = L.featureGroup().addTo(this.chatMapInstance);
 
-      // Keep mapContext in sync and recargar capas base (debounced)
-      let _baseDebounce = null;
-      const updateCtx = () => {
-        const b = this.chatMapInstance.getBounds();
-        this.chat.mapContext = {
-          zoom: this.chatMapInstance.getZoom(),
-          bbox: { west: +b.getWest().toFixed(6), south: +b.getSouth().toFixed(6),
-                  east: +b.getEast().toFixed(6), north: +b.getNorth().toFixed(6) },
+      this.chatMapInstance = new maplibregl.Map({
+        container: 'chat-map',
+        style: { version: 8, sources: {}, layers: [] },
+        center: [-3.703, 40.416],
+        zoom: 16,
+        pitchWithRotate: true,
+        attributionControl: false,
+      });
+
+      this.chatMapInstance.on('load', () => {
+        this.chatMapInstance.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+        this.chatMapInstance.addControl(new BasemapSwitcherControl(), 'top-right');
+        this._registerMapHandlers(this.chatMapInstance);
+
+        let _baseDebounce = null;
+        const updateCtx = () => {
+          const b = this.chatMapInstance.getBounds();
+          this.chat.mapContext = {
+            zoom: Math.round(this.chatMapInstance.getZoom()),
+            bbox: { west: +b.getWest().toFixed(6), south: +b.getSouth().toFixed(6),
+                    east: +b.getEast().toFixed(6), north: +b.getNorth().toFixed(6) },
+          };
+          clearTimeout(_baseDebounce);
+          _baseDebounce = setTimeout(() => { this.loadChatBaseLayers(); }, 700);
         };
-        clearTimeout(_baseDebounce);
-        _baseDebounce = setTimeout(() => { this.loadChatBaseLayers(); }, 700);
-      };
-      this.chatMapInstance.on('moveend zoomend', updateCtx);
-      updateCtx();
-      // Cargar capas base si ya hay agente seleccionado al inicializar el mapa
-      if (this.chat.agentId) this.$nextTick(() => this.loadChatBaseLayers());
+        this.chatMapInstance.on('moveend', updateCtx);
+        this.chatMapInstance.on('zoomend', updateCtx);
+        updateCtx();
+        if (this.chat.agentId) this.loadChatBaseLayers();
+      });
     },
 
-    // Limpia SOLO el highlight de resultado, sin tocar las capas base
+    // Limpia SOLO el highlight de resultado
     clearChatHighlight() {
-      if (this._highlightLayer) {
-        try { this.chatMapInstance?.removeLayer(this._highlightLayer); } catch {}
-        this._highlightLayer = null;
-      }
+      this._clearMapLayersWithPrefix(this.chatMapInstance, 'chat-highlight');
     },
 
-    // Carga todas las capas del catálogo del agente para el bbox actual (solo zoom >= 18)
+    // Carga todas las capas del catálogo del agente (solo zoom >= 18)
     async loadChatBaseLayers() {
       const agentId = this.chat.agentId;
-      if (!this.chatMapInstance) return;
+      if (!this.chatMapInstance?.isStyleLoaded()) return;
 
       const zoom = this.chat.mapContext.zoom;
       const bbox = this.chat.mapContext.bbox;
 
       if (!agentId || zoom < 18) {
-        if (this.chatMapLayer) this.chatMapLayer.clearLayers();
+        this._clearMapLayersWithPrefix(this.chatMapInstance, 'chat-base-');
         this.chatMapFeatures = [];
         this.chatMapLegend = [];
         this.chatLayerColorMap = {};
@@ -1121,8 +1296,7 @@ function app() {
       const catalog = agent?.gis_layers_catalog || [];
       if (catalog.length === 0) return;
 
-      // Limpiar capas base anteriores (el highlight queda intacto en su propio grupo)
-      if (this.chatMapLayer) this.chatMapLayer.clearLayers();
+      this._clearMapLayersWithPrefix(this.chatMapInstance, 'chat-base-');
       this.chatMapFeatures = [];
       this.chatMapLegend = [];
       this.chatLayerColorMap = {};
@@ -1184,7 +1358,6 @@ function app() {
         const hasFinalSql = !!run.final_sql;
         this.chat.messages.push({ role:'agent', content: answer||'(Sin respuesta)', runId, steps: steps.slice(0,10), hasFinalSql });
         if (this.page === 'runs') this.loadRuns();
-        // Pintar el resultado analítico (highlight) encima de las capas base
         if (hasFinalSql) {
           const geoR = await this.api('GET', `/api/runs/${runId}/geojson/`);
           if (geoR.ok && geoR.data.features?.length > 0) {
@@ -1207,9 +1380,7 @@ function app() {
       if (r.ok && r.data.features?.length > 0) {
         this.addFinalGeoJsonToMap(r.data.features, 'chat');
       } else if (!r.ok) {
-        const msg = r.data?.error || JSON.stringify(r.data);
-        this.showToast(`Error GeoJSON: ${msg}`, 'error');
-        console.error('geojson endpoint error:', r.data);
+        this.showToast(`Error GeoJSON: ${r.data?.error || JSON.stringify(r.data)}`, 'error');
       } else {
         this.showToast('El resultado no contiene geometrías visualizables (0 features)', 'error');
       }
@@ -1238,50 +1409,31 @@ function app() {
 
     // ── AUTO-FETCH LAYER GEOMETRIES ──────────────────────
     async autoFetchLayerGeoms(steps, bbox, agentId) {
-      // Collect unique layers with their result counts from tool steps
-      const layerCounts = new Map(); // layer -> count
-
+      const layerCounts = new Map();
       for (const step of steps) {
         const args  = step.input_json?.args  || {};
         const data  = step.output_json?.data || step.output_json || {};
-
-        // spatial.query_layer / spatial.nearby
         const ln = args.layer || data.layer;
         if (ln) layerCounts.set(ln, Math.max(layerCounts.get(ln)||0, data.count_total||0));
-
-        // spatial.context_pack
         for (const l of (data.layers || [])) {
           if (l.name && l.count > 0) layerCounts.set(l.name, Math.max(layerCounts.get(l.name)||0, l.count));
         }
-
-        // spatial.intersects — source + target
         if (args.source_layer) layerCounts.set(args.source_layer, Math.max(layerCounts.get(args.source_layer)||0, 1));
         if (args.target_layer) layerCounts.set(args.target_layer, Math.max(layerCounts.get(args.target_layer)||0, 1));
       }
-
       if (layerCounts.size === 0) return;
 
-      // Sort by count desc, limit to 5 layers
       const topLayers = [...layerCounts.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([name, count]) => ({ name, count }));
+        .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, count]) => ({ name, count }));
 
-      // Pre-populate legend with loading state
       this.chatMapFetching = true;
       for (const { name, count } of topLayers) {
         const color = this.getLayerColor(name);
         const existing = this.chatMapLegend.find(l => l.name === name);
-        if (!existing) {
-          this.chatMapLegend.push({ name, color, count, loading: true });
-        }
+        if (!existing) this.chatMapLegend.push({ name, color, count, loading: true });
       }
 
-      // Fetch geometries in parallel
-      await Promise.all(topLayers.map(({ name }) =>
-        this.fetchLayerGeomForChat(name, bbox, agentId)
-      ));
-
+      await Promise.all(topLayers.map(({ name }) => this.fetchLayerGeomForChat(name, bbox, agentId)));
       this.chatMapFetching = false;
     },
 
@@ -1306,36 +1458,24 @@ function app() {
         const items = exec.data.output_json?.data?.items || [];
         const features = items.flatMap(item => {
           if (!item.geom_geojson) return [];
-          try {
-            return [{ type:'Feature', geometry: JSON.parse(item.geom_geojson), properties: {...item, _layer: layerName} }];
-          } catch { return []; }
+          try { return [{ type:'Feature', geometry: JSON.parse(item.geom_geojson), properties: {...item, _layer: layerName} }]; }
+          catch { return []; }
         });
 
-        // Update legend entry
         const entry = this.chatMapLegend.find(l => l.name === layerName);
         if (entry) { entry.loading = false; entry.count = items.length; }
 
-        if (features.length > 0) {
-          // Add with per-layer color
-          if (!this.chatMapInstance) return;
-          for (const f of features) {
-            try {
-              L.geoJSON(f, {
-                style: { color, weight: 1.5, fillColor: color, fillOpacity: 0.25 },
-                pointToLayer: (_, ll) => L.circleMarker(ll, { radius:5, color, fillColor: color, fillOpacity:0.8, weight:1 }),
-                onEachFeature: (ft, lyr) => {
-                  const props = ft.properties || {};
-                  const html = Object.entries(props)
-                    .filter(([k]) => !k.endsWith('_geojson') && !k.startsWith('_'))
-                    .slice(0, 12)
-                    .map(([k,v]) => `<b>${k}:</b> ${v ?? ''}`)
-                    .join('<br>');
-                  if (html) lyr.bindPopup(`<div style="font-size:11px;max-height:180px;overflow:auto;max-width:220px"><b style="color:${color}">${layerName}</b><br>${html}</div>`);
-                },
-              }).addTo(this.chatMapLayer);
-              this.chatMapFeatures.push(f);
-            } catch {}
-          }
+        if (features.length > 0 && this.chatMapInstance?.isStyleLoaded()) {
+          const sourceId = `chat-base-${layerName}`;
+          this._addGeoJsonLayers(
+            this.chatMapInstance, sourceId,
+            { type: 'FeatureCollection', features },
+            { 'fill-color': color, 'fill-opacity': 0.25 },
+            { 'line-color': color, 'line-width': 1.5 },
+            { 'circle-color': color, 'circle-radius': 5, 'circle-opacity': 0.8,
+              'circle-stroke-color': '#1e293b', 'circle-stroke-width': 1 }
+          );
+          this.chatMapFeatures.push(...features);
         }
       } catch {
         const entry = this.chatMapLegend.find(l => l.name === layerName);
@@ -1345,31 +1485,22 @@ function app() {
 
     addFeaturesToMapTarget(features, target) {
       const mapInst = target === 'chat' ? this.chatMapInstance : this.mapInstance;
-      const mapLyr  = target === 'chat' ? this.chatMapLayer    : this.mapLayer;
-      const featArr = target === 'chat' ? this.chatMapFeatures  : this.mapFeatures;
-      if (!mapInst) return;
-      if (!mapLyr) return;
-      const added = [];
-      for (const f of features) {
-        try {
-          const layer = L.geoJSON(f, {
-            style: { color: this.randomColor(), weight: 2, fillOpacity: 0.3 },
-            pointToLayer: (ft, ll) => L.circleMarker(ll, { radius:6, color:'#6366f1', fillOpacity:0.8 }),
-            onEachFeature: (ft, lyr) => {
-              const props = ft.properties || {};
-              const html = Object.entries(props).filter(([k]) => !k.endsWith('_geojson'))
-                .map(([k,v]) => `<b>${k}:</b> ${v}`).join('<br>');
-              if (html) lyr.bindPopup(`<div style="font-size:12px;max-height:200px;overflow:auto">${html}</div>`);
-            },
-          });
-          mapLyr.addLayer(layer);
-          added.push(f);
-          featArr.push(f);
-        } catch {}
-      }
-      if (added.length > 0) {
-        try { mapInst.fitBounds(mapLyr.getBounds(), { padding:[20,20], maxZoom:18 }); } catch {}
-      }
+      if (!mapInst?.isStyleLoaded()) return;
+
+      const sourceId = target === 'chat' ? 'chat-manual' : 'map-manual';
+      const featArr = target === 'chat' ? this.chatMapFeatures : this.mapFeatures;
+      featArr.push(...features);
+
+      const fc = { type: 'FeatureCollection', features: featArr };
+      const color = '#6366f1';
+
+      this._addGeoJsonLayers(
+        mapInst, sourceId, fc,
+        { 'fill-color': color, 'fill-opacity': 0.3 },
+        { 'line-color': color, 'line-width': 2 },
+        { 'circle-color': color, 'circle-radius': 6, 'circle-opacity': 0.8 }
+      );
+      this._fitToFeatures(mapInst, features, 20, 18);
     },
 
     // ── RUNS ─────────────────────────────────────────────
@@ -1401,114 +1532,54 @@ function app() {
     },
     async showRunOnMap(run) {
       this.setPage('map');
-      // Si el run tiene final_sql, usar el endpoint /geojson/ para visualización rica
-      if (run.final_sql) {
-        this.$nextTick(async () => {
+      await this.$nextTick();
+      const doShow = async () => {
+        if (run.final_sql) {
           const r = await this.api('GET', `/api/runs/${run.id}/geojson/`);
           if (r.ok && r.data.features?.length > 0) {
             this.addFinalGeoJsonToMap(r.data.features, 'map');
           } else {
-            // Fallback a la extracción de steps si /geojson/ falla o no devuelve features
             this.extractAndAddGeoJsonFromSteps(this.runs.trace, 'map');
           }
-        });
-      } else {
-        this.$nextTick(() => this.extractAndAddGeoJsonFromSteps(this.runs.trace, 'map'));
-      }
-    },
-
-    // Estilos por _feature_type para el GeoJSON del endpoint /geojson/
-    _featureTypeStyle(featureType) {
-      const FEATURE_TYPE_STYLES = {
-        // Resultado principal: amarillo brillante, línea gruesa — máxima visibilidad
-        'result':     { color: '#facc15', weight: 5, fillColor: '#facc15', fillOpacity: 0.55, radius: 8,
-                        outlineColor: '#92400e', outlineWeight: 1 },
-        // Origen del análisis (nearest_neighbor, within_distance…): verde
-        'source':     { color: '#22c55e', weight: 3, fillColor: '#22c55e', fillOpacity: 0.8, radius: 8 },
-        // Vecino / referencia: naranja
-        'neighbor':   { color: '#f97316', weight: 3, fillColor: '#f97316', fillOpacity: 0.8, radius: 8 },
-        // Línea de conexión: blanco roto punteado
-        'connection': { color: '#e2e8f0', weight: 2, dashArray: '6 4', fillOpacity: 0, radius: 0 },
+        } else {
+          this.extractAndAddGeoJsonFromSteps(this.runs.trace, 'map');
+        }
       };
-      return FEATURE_TYPE_STYLES[featureType] || FEATURE_TYPE_STYLES['result'];
+      this._runWhenMapReady(this.mapInstance, doShow);
     },
 
-    // Capa temporal de highlights (se borra entre llamadas para no acumular)
-    _highlightLayer: null,
-
+    // Render features con estilos data-driven por _feature_type
     addFinalGeoJsonToMap(features, target) {
       const mapInst = target === 'chat' ? this.chatMapInstance : this.mapInstance;
-      const mapLyr  = target === 'chat' ? this.chatMapLayer    : this.mapLayer;
-      const featArr = target === 'chat' ? this.chatMapFeatures  : this.mapFeatures;
-      if (!mapInst || !mapLyr) return;
+      if (!mapInst?.isStyleLoaded()) return;
 
-      // Eliminar highlight anterior (si lo hay) sin tocar las capas de fondo
-      if (this._highlightLayer) {
-        try { mapInst.removeLayer(this._highlightLayer); } catch {}
-        this._highlightLayer = null;
-      }
+      const sourceId = target === 'chat' ? 'chat-highlight' : 'map-highlight';
+      const featArr  = target === 'chat' ? this.chatMapFeatures : this.mapFeatures;
 
-      // Crear grupo dedicado para el highlight
-      const highlightGroup = L.layerGroup().addTo(mapInst);
-      this._highlightLayer = highlightGroup;
+      // Eliminar highlight anterior sin tocar las capas de fondo
+      this._clearMapLayersWithPrefix(mapInst, sourceId);
 
-      const highlightBounds = [];
+      const fc = { type: 'FeatureCollection', features };
+      const ftColor = ['match', ['get', '_feature_type'],
+        'result', '#facc15', 'source', '#22c55e', 'neighbor', '#f97316', 'connection', '#e2e8f0', '#facc15'];
+      const ftOpacity = ['match', ['get', '_feature_type'],
+        'result', 0.55, 'source', 0.8, 'neighbor', 0.8, 'connection', 0, 0.55];
+      const ftWidth = ['match', ['get', '_feature_type'],
+        'result', 5, 'source', 3, 'neighbor', 3, 'connection', 2, 3];
+      const ftRadius = ['match', ['get', '_feature_type'],
+        'result', 8, 'source', 8, 'neighbor', 8, 'connection', 0, 8];
 
-      for (const f of features) {
-        try {
-          const ft_type = (f.properties || {})._feature_type || 'result';
-          const style = this._featureTypeStyle(ft_type);
-          const lyr = L.geoJSON(f, {
-            style: {
-              color: style.color,
-              weight: style.weight,
-              fillColor: style.fillColor,
-              fillOpacity: style.fillOpacity,
-              dashArray: style.dashArray,
-              // Halo oscuro para contraste sobre fondos claros
-              opacity: 1,
-            },
-            pointToLayer: (_, ll) => {
-              // Círculo con borde oscuro para visibilidad sobre cualquier fondo
-              return L.circleMarker(ll, {
-                radius: style.radius || 8,
-                color: '#1e293b',
-                weight: 2,
-                fillColor: style.fillColor || style.color,
-                fillOpacity: style.fillOpacity,
-              });
-            },
-            onEachFeature: (ft, layer) => {
-              const props = ft.properties || {};
-              const _labels = { result:'Resultado', source:'Origen', neighbor:'Vecino', connection:'Conexión' };
-              const label = _labels[ft_type] || ft_type;
-              const html = Object.entries(props)
-                .filter(([k]) => !k.startsWith('_') && !k.endsWith('_geojson'))
-                .slice(0, 15)
-                .map(([k, v]) => `<b>${k}:</b> ${v ?? ''}`)
-                .join('<br>');
-              layer.bindPopup(
-                `<div style="font-size:11px;max-height:200px;overflow:auto;max-width:260px">` +
-                `<span style="color:${style.color};font-weight:700">${label}</span><br>${html}</div>`
-              );
-              try {
-                const b = layer.getBounds ? layer.getBounds() : null;
-                if (b) highlightBounds.push(b);
-              } catch {}
-            },
-          });
-          highlightGroup.addLayer(lyr);
-          featArr.push(f);
-        } catch {}
-      }
+      this._addGeoJsonLayers(
+        mapInst, sourceId, fc,
+        { 'fill-color': ftColor, 'fill-opacity': ftOpacity },
+        { 'line-color': ftColor, 'line-width': ftWidth },
+        { 'circle-color': ftColor, 'circle-radius': ftRadius,
+          'circle-opacity': ftOpacity,
+          'circle-stroke-color': '#1e293b', 'circle-stroke-width': 2 }
+      );
 
-      // Centrar mapa en los highlights
-      if (highlightBounds.length > 0) {
-        try {
-          const combined = highlightBounds.reduce((acc, b) => acc.extend(b), L.latLngBounds(highlightBounds[0]));
-          mapInst.fitBounds(combined, { padding: [40, 40], maxZoom: 19 });
-        } catch {}
-      }
+      featArr.push(...features);
+      this._fitToFeatures(mapInst, features, 40, 19);
     },
 
     openTrace(runId) {
@@ -1523,16 +1594,10 @@ function app() {
     },
     openAgentForm(agent) {
       this.agentForm.data = agent
-        ? {
-            ...agent,
-            tool_allowlist: [...(agent.tool_allowlist||[])],
-            gis_db_connections: JSON.parse(JSON.stringify(agent.gis_db_connections || [])),
-          }
-        : {
-            name:'', system_prompt:'Eres un agente espacial analítico.',
-            profile:'investigate', is_active:true, tool_allowlist:[],
-            gis_db_connections:[],
-          };
+        ? { ...agent, tool_allowlist: [...(agent.tool_allowlist||[])],
+            gis_db_connections: JSON.parse(JSON.stringify(agent.gis_db_connections || [])) }
+        : { name:'', system_prompt:'Eres un agente espacial analítico.',
+            profile:'investigate', is_active:true, tool_allowlist:[], gis_db_connections:[] };
       this.agentForm.inspecting = false;
       this.agentForm.open = true;
     },
@@ -1567,7 +1632,6 @@ function app() {
       if (!d.name) { this.showToast('El nombre es requerido','error'); return; }
       const r = await this.api(d.id?'PATCH':'POST', d.id?`/api/agents/${d.id}/`:'/api/agents/', d);
       if (r.ok) {
-        // Actualizar el objeto en el formulario con los datos devueltos (incluye catálogo)
         Object.assign(this.agentForm.data, r.data);
         await this.loadAgents();
         if (!d.id) this.agentForm.open = false;
@@ -1611,9 +1675,7 @@ function app() {
         } else {
           this.showToast(r.data?.error || 'Error al inspeccionar', 'error');
         }
-      } finally {
-        this.agentForm.inspecting = false;
-      }
+      } finally { this.agentForm.inspecting = false; }
     },
     async deleteAgent(agent) {
       if (!confirm(`¿Eliminar agente "${agent.name}"?`)) return;
@@ -1636,10 +1698,7 @@ function app() {
     // ── LAYERS ───────────────────────────────────────────
     async loadLayers() {
       const r = await this.api('GET', '/api/gis/layers/');
-      if (r.ok) {
-        this.layersList = r.data || [];
-        this.hasGlobalGis = this.layersList.length > 0;
-      }
+      if (r.ok) { this.layersList = r.data || []; this.hasGlobalGis = this.layersList.length > 0; }
     },
     get activeLayersCatalog() {
       if (this.layersAgentId) {
@@ -1656,43 +1715,50 @@ function app() {
 
     // ── MAP (standalone) ─────────────────────────────────
     initMap() {
-      if (this.mapInstance) { this.mapInstance.invalidateSize(); return; }
-      this.mapInstance = L.map('map').setView([40.416, -3.703], 13);
-      new BasemapSwitcherControl().addTo(this.mapInstance);
-      this.mapLayer = L.featureGroup().addTo(this.mapInstance);
+      if (this.mapInstance) { this.mapInstance.resize(); return; }
 
-      // Cargar capas según el agente seleccionado (o fallback global)
-      this.onMapAgentChange();
+      this.mapInstance = new maplibregl.Map({
+        container: 'map',
+        style: { version: 8, sources: {}, layers: [] },
+        center: [-3.703, 40.416],
+        zoom: 13,
+        pitchWithRotate: true,
+        attributionControl: false,
+      });
 
-      // Trackear zoom y bbox; refrescar capas BD si zoom >= 18
-      const updateMapCtx = () => {
-        const b = this.mapInstance.getBounds();
-        this.mapZoom = this.mapInstance.getZoom();
-        this.mapBbox = {
-          west:  +b.getWest().toFixed(6),  south: +b.getSouth().toFixed(6),
-          east:  +b.getEast().toFixed(6),  north: +b.getNorth().toFixed(6),
+      this.mapInstance.on('load', () => {
+        this.mapInstance.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+        this.mapInstance.addControl(new BasemapSwitcherControl(), 'top-right');
+        this._registerMapHandlers(this.mapInstance);
+        this.onMapAgentChange();
+
+        const updateMapCtx = () => {
+          const b = this.mapInstance.getBounds();
+          this.mapZoom = this.mapInstance.getZoom();
+          this.mapBbox = {
+            west: +b.getWest().toFixed(6), south: +b.getSouth().toFixed(6),
+            east: +b.getEast().toFixed(6), north: +b.getNorth().toFixed(6),
+          };
+          this.scheduleMapDbRefresh();
         };
-        this.scheduleMapDbRefresh();
-      };
-      this.mapInstance.on('moveend zoomend', updateMapCtx);
+        this.mapInstance.on('moveend', updateMapCtx);
+        this.mapInstance.on('zoomend', updateMapCtx);
+      });
     },
 
     onMapAgentChange() {
-      // Limpiar capas BD actuales del mapa y resetear estado de colores
-      for (const grp of Object.values(this._mapDbLayerGroups)) {
-        if (this.mapInstance && this.mapInstance.hasLayer(grp)) this.mapInstance.removeLayer(grp);
+      if (this.mapInstance?.isStyleLoaded()) {
+        this._clearMapLayersWithPrefix(this.mapInstance, 'mapdb-');
       }
-      this._mapDbLayerGroups = {};
       this._mapDbColorIdx = 0;
       this._mapDbColorMap = {};
 
-      // Obtener el catálogo: del agente seleccionado, o global si está configurado
       let catalog = [];
       if (this.mapAgentId) {
         const agent = this.agents.find(a => a.id == this.mapAgentId);
         catalog = agent ? (agent.gis_layers_catalog || []) : [];
       } else if (this.hasGlobalGis) {
-        catalog = this.layersList;  // fallback: catálogo global de settings
+        catalog = this.layersList;
       }
 
       this.mapDbLayers = catalog.map(l => ({
@@ -1700,7 +1766,7 @@ function app() {
         visible: true, count: null, total: null, loading: false,
       }));
 
-      if (this.mapZoom >= 18 && this.mapInstance) this.scheduleMapDbRefresh();
+      if (this.mapZoom >= 18 && this.mapInstance?.isStyleLoaded()) this.scheduleMapDbRefresh();
     },
 
     getMapDbColor(name) {
@@ -1715,9 +1781,12 @@ function app() {
     scheduleMapDbRefresh() {
       clearTimeout(this._mapDbFetchTimer);
       if (this.mapZoom < 18) {
-        // Ocultar capas BD del mapa pero conservar el estado
-        for (const grp of Object.values(this._mapDbLayerGroups)) {
-          if (this.mapInstance && this.mapInstance.hasLayer(grp)) this.mapInstance.removeLayer(grp);
+        // Ocultar capas BD pero conservar sources
+        if (this.mapInstance?.isStyleLoaded()) {
+          const style = this.mapInstance.getStyle();
+          (style.layers || []).filter(l => l.id.startsWith('mapdb-')).forEach(l => {
+            try { this.mapInstance.setLayoutProperty(l.id, 'visibility', 'none'); } catch {}
+          });
         }
         return;
       }
@@ -1725,7 +1794,7 @@ function app() {
     },
 
     async refreshMapDbLayers() {
-      if (this.mapZoom < 18 || !this.mapInstance) return;
+      if (this.mapZoom < 18 || !this.mapInstance?.isStyleLoaded()) return;
       await Promise.all(
         this.mapDbLayers.filter(l => l.visible).map(l => this.fetchMapDbLayerFeatures(l.name))
       );
@@ -1744,32 +1813,21 @@ function app() {
         if (!r.ok) return;
         entry.count = r.data.count;
         entry.total = r.data.total;
+        if (!this.mapInstance?.isStyleLoaded()) return;
 
-        // Reemplazar grupo de capas
-        if (this._mapDbLayerGroups[layerName]) this.mapInstance.removeLayer(this._mapDbLayerGroups[layerName]);
-        if (!entry.visible) return;
-
+        const sourceId = `mapdb-${layerName}`;
         const color = entry.color;
-        const grp = L.featureGroup();
-        for (const f of (r.data.features || [])) {
-          try {
-            L.geoJSON(f, {
-              style: { color, weight: 1.5, fillColor: color, fillOpacity: 0.25 },
-              pointToLayer: (_, ll) => L.circleMarker(ll, { radius: 5, color, fillColor: color, fillOpacity: 0.8, weight: 1 }),
-              onEachFeature: (ft, lyr) => {
-                const props = ft.properties || {};
-                const html = Object.entries(props)
-                  .filter(([k]) => !k.endsWith('_geojson') && !k.startsWith('_'))
-                  .slice(0, 12)
-                  .map(([k, v]) => `<b>${k}:</b> ${v ?? ''}`)
-                  .join('<br>');
-                if (html) lyr.bindPopup(`<div style="font-size:11px;max-height:180px;overflow:auto;max-width:220px"><b style="color:${color}">${layerName}</b><br>${html}</div>`);
-              },
-            }).addTo(grp);
-          } catch {}
-        }
-        grp.addTo(this.mapInstance);
-        this._mapDbLayerGroups[layerName] = grp;
+        const fc = { type: 'FeatureCollection', features: r.data.features || [] };
+        const vis = entry.visible ? 'visible' : 'none';
+
+        this._addGeoJsonLayers(
+          this.mapInstance, sourceId, fc,
+          { 'fill-color': color, 'fill-opacity': 0.25 },
+          { 'line-color': color, 'line-width': 1.5 },
+          { 'circle-color': color, 'circle-radius': 5, 'circle-opacity': 0.8,
+            'circle-stroke-color': color, 'circle-stroke-width': 1 },
+          { visibility: vis }
+        );
       } catch {
         entry.loading = false;
       }
@@ -1777,16 +1835,18 @@ function app() {
 
     toggleMapDbLayerVisibility(layerName) {
       const entry = this.mapDbLayers.find(l => l.name === layerName);
-      if (!entry) return;
+      if (!entry || !this.mapInstance?.isStyleLoaded()) return;
       entry.visible = !entry.visible;
-      const grp = this._mapDbLayerGroups[layerName];
-      if (!this.mapInstance) return;
-      if (!entry.visible) {
-        if (grp && this.mapInstance.hasLayer(grp)) this.mapInstance.removeLayer(grp);
-      } else if (this.mapZoom >= 18) {
-        this.fetchMapDbLayerFeatures(layerName);
-      }
+      const sourceId = `mapdb-${layerName}`;
+      const vis = entry.visible ? 'visible' : 'none';
+      [`${sourceId}-fill`, `${sourceId}-line`, `${sourceId}-circle`].forEach(id => {
+        if (this.mapInstance.getLayer(id)) {
+          try { this.mapInstance.setLayoutProperty(id, 'visibility', vis); } catch {}
+        }
+      });
+      if (entry.visible && this.mapZoom >= 18) this.fetchMapDbLayerFeatures(layerName);
     },
+
     addGeoJsonToMap() {
       this.mapError = '';
       try {
@@ -1798,10 +1858,29 @@ function app() {
         this.showToast(`${features.length} features añadidas`);
       } catch(e) { this.mapError = `JSON inválido: ${e.message}`; }
     },
+
     fitMapToFeatures() {
-      if (this.mapLayer&&this.mapInstance) try { this.mapInstance.fitBounds(this.mapLayer.getBounds(),{padding:[20,20]}); } catch {}
+      if (this.mapInstance && this.mapFeatures.length > 0) {
+        this._fitToFeatures(this.mapInstance, this.mapFeatures, 20);
+      }
     },
-    clearMapFeatures() { if(this.mapLayer) this.mapLayer.clearLayers(); this.mapFeatures = []; },
+
+    clearMapFeatures() {
+      this.mapFeatures = [];
+      if (!this.mapInstance?.isStyleLoaded()) return;
+      this._clearMapLayersWithPrefix(this.mapInstance, 'map-manual');
+      this._clearMapLayersWithPrefix(this.mapInstance, 'map-highlight');
+    },
+
+    // ── 3D TOGGLES ───────────────────────────────────────
+    toggleChatMap3D() {
+      this.chatMap3D = !this.chatMap3D;
+      this.chatMapInstance?.easeTo({ pitch: this.chatMap3D ? 45 : 0, duration: 600 });
+    },
+    toggleMap3D() {
+      this.map3D = !this.map3D;
+      this.mapInstance?.easeTo({ pitch: this.map3D ? 45 : 0, duration: 600 });
+    },
 
     // ── HELPERS ──────────────────────────────────────────
     formatDate(d) { if(!d)return''; return new Date(d).toLocaleString('es-ES',{dateStyle:'short',timeStyle:'short'}); },
