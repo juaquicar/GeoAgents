@@ -213,7 +213,7 @@
         <div id="chat-map" class="absolute inset-0"></div>
 
         <!-- Layer legend overlay -->
-        <div x-show="chatMapLegend.length > 0 || chatMapFetching"
+        <div x-show="chat.agentId && (chatMapLegend.length > 0 || chatMapFetching || chatMapZoomWarning)"
           class="absolute bottom-3 left-3 z-[1000] bg-slate-900/90 border border-slate-700 rounded-xl shadow-lg overflow-hidden"
           style="min-width:170px;max-width:220px">
           <!-- Header -->
@@ -228,11 +228,16 @@
                 </svg>
                 <span class="text-xs">cargando…</span>
               </div>
-              <button @click="clearChatMapFeatures()" class="text-slate-500 hover:text-red-400 text-xs leading-none">✕</button>
+              <!-- ✕ solo limpia el highlight, no las capas base -->
+              <button @click="clearChatHighlight()" title="Limpiar resultado" class="text-slate-500 hover:text-red-400 text-xs leading-none">✕</button>
             </div>
           </div>
+          <!-- Aviso zoom < 18 -->
+          <div x-show="chatMapZoomWarning" class="px-3 py-2 text-xs text-amber-400">
+            Acerca el mapa (zoom ≥ 18) para ver las capas
+          </div>
           <!-- Layer list -->
-          <div class="py-1">
+          <div class="py-1" x-show="!chatMapZoomWarning">
             <template x-for="lyr in chatMapLegend" :key="lyr.name">
               <div class="flex items-center gap-2 px-3 py-1.5">
                 <div class="w-3 h-3 rounded-sm shrink-0" :style="`background:${lyr.color}`"></div>
@@ -994,6 +999,7 @@ function app() {
     chatMapInstance: null, chatMapLayer: null, chatMapFeatures: [],
     chatMapLegend: [],   // [{name, color, count, loading}]
     chatMapFetching: false,
+    chatMapZoomWarning: false,
     chatLayerColorMap: {},
     _chatLayerColorIdx: 0,
 
@@ -1009,6 +1015,10 @@ function app() {
         if (v === 'agents') this.loadAgents();
         if (v === 'tools') this.loadTools();
         if (v === 'layers') this.loadLayers();
+      });
+      // Recargar capas base del chat cuando cambia el agente seleccionado
+      this.$watch('chat.agentId', () => {
+        if (this.chatMapInstance) this.loadChatBaseLayers();
       });
       // Init chat map on first load
       if (this.token) { await this.$nextTick(); this.initChatMap(); }
@@ -1062,7 +1072,8 @@ function app() {
       new BasemapSwitcherControl().addTo(this.chatMapInstance);
       this.chatMapLayer = L.featureGroup().addTo(this.chatMapInstance);
 
-      // Keep mapContext in sync with map view
+      // Keep mapContext in sync and recargar capas base (debounced)
+      let _baseDebounce = null;
       const updateCtx = () => {
         const b = this.chatMapInstance.getBounds();
         this.chat.mapContext = {
@@ -1070,17 +1081,66 @@ function app() {
           bbox: { west: +b.getWest().toFixed(6), south: +b.getSouth().toFixed(6),
                   east: +b.getEast().toFixed(6), north: +b.getNorth().toFixed(6) },
         };
+        clearTimeout(_baseDebounce);
+        _baseDebounce = setTimeout(() => { this.loadChatBaseLayers(); }, 700);
       };
-      this.chatMapInstance.on('moveend zoomend load', updateCtx);
+      this.chatMapInstance.on('moveend zoomend', updateCtx);
       updateCtx();
+      // Cargar capas base si ya hay agente seleccionado al inicializar el mapa
+      if (this.chat.agentId) this.$nextTick(() => this.loadChatBaseLayers());
     },
 
-    clearChatMapFeatures() {
+    // Limpia SOLO el highlight de resultado, sin tocar las capas base
+    clearChatHighlight() {
+      if (this._highlightLayer) {
+        try { this.chatMapInstance?.removeLayer(this._highlightLayer); } catch {}
+        this._highlightLayer = null;
+      }
+    },
+
+    // Carga todas las capas del catálogo del agente para el bbox actual (solo zoom >= 18)
+    async loadChatBaseLayers() {
+      const agentId = this.chat.agentId;
+      if (!this.chatMapInstance) return;
+
+      const zoom = this.chat.mapContext.zoom;
+      const bbox = this.chat.mapContext.bbox;
+
+      if (!agentId || zoom < 18) {
+        if (this.chatMapLayer) this.chatMapLayer.clearLayers();
+        this.chatMapFeatures = [];
+        this.chatMapLegend = [];
+        this.chatLayerColorMap = {};
+        this._chatLayerColorIdx = 0;
+        this.chatMapZoomWarning = !!agentId && zoom < 18;
+        return;
+      }
+      this.chatMapZoomWarning = false;
+
+      const agent = this.agents.find(a => a.id === parseInt(agentId));
+      const catalog = agent?.gis_layers_catalog || [];
+      if (catalog.length === 0) return;
+
+      // Limpiar capas base anteriores (el highlight queda intacto en su propio grupo)
       if (this.chatMapLayer) this.chatMapLayer.clearLayers();
       this.chatMapFeatures = [];
       this.chatMapLegend = [];
       this.chatLayerColorMap = {};
       this._chatLayerColorIdx = 0;
+
+      const layers = catalog.slice(0, 10);
+      this.chatMapFetching = true;
+      for (const lyr of layers) {
+        const name = lyr.name || lyr.table;
+        if (!name) continue;
+        this.chatMapLegend.push({ name, color: this.getLayerColor(name), count: 0, loading: true });
+      }
+
+      await Promise.all(layers.map(lyr => {
+        const name = lyr.name || lyr.table;
+        return name ? this.fetchLayerGeomForChat(name, bbox, agentId) : Promise.resolve();
+      }));
+      this.chatMapFetching = false;
     },
 
     getLayerColor(name) {
@@ -1124,10 +1184,7 @@ function app() {
         const hasFinalSql = !!run.final_sql;
         this.chat.messages.push({ role:'agent', content: answer||'(Sin respuesta)', runId, steps: steps.slice(0,10), hasFinalSql });
         if (this.page === 'runs') this.loadRuns();
-        // Siempre mostrar las geometrías de capas consultadas (contexto de fondo)
-        this.extractAndAddGeoJsonFromSteps(steps, 'chat');
-        this.autoFetchLayerGeoms(steps, this.chat.mapContext.bbox, this.chat.agentId);
-        // Si hay final_sql, pintar también el resultado analítico encima
+        // Pintar el resultado analítico (highlight) encima de las capas base
         if (hasFinalSql) {
           const geoR = await this.api('GET', `/api/runs/${runId}/geojson/`);
           if (geoR.ok && geoR.data.features?.length > 0) {
@@ -1148,7 +1205,6 @@ function app() {
     async chatShowOnMap(runId) {
       const r = await this.api('GET', `/api/runs/${runId}/geojson/`);
       if (r.ok && r.data.features?.length > 0) {
-        this.clearChatMapFeatures();
         this.addFinalGeoJsonToMap(r.data.features, 'chat');
       } else if (!r.ok) {
         const msg = r.data?.error || JSON.stringify(r.data);
