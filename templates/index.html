@@ -164,6 +164,12 @@
                     </button>
                   </template>
                 </div>
+                <div x-show="msg.hasFinalSql && msg.role === 'agent'" class="mt-2 not-prose">
+                  <button @click="chatShowOnMap(msg.runId)"
+                    class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1 rounded-lg">
+                    🗺 Ver en el mapa
+                  </button>
+                </div>
               </div>
             </div>
           </template>
@@ -290,7 +296,10 @@
                 <button @click="executeRun(runs.selected.id)" x-show="runs.selected.status === 'pending'"
                   class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg">▶ Ejecutar</button>
                 <button @click="showRunOnMap(runs.selected)"
-                  class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1.5 rounded-lg">📍 Ver en mapa</button>
+                  :class="runs.selected.final_sql ? 'bg-indigo-700 hover:bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'"
+                  class="text-xs px-3 py-1.5 rounded-lg"
+                  :title="runs.selected.final_sql ? 'Visualizar resultado GeoJSON en el mapa' : 'Ver geometrías extraídas de los pasos'"
+                  x-text="runs.selected.final_sql ? '🗺 Ver en el mapa' : '📍 Ver en mapa'"></button>
               </div>
             </div>
             <div x-show="runs.selected.final_text || runs.selected.output_json?.final_text || runs.selected.output_json?.answer" class="px-6 py-4 bg-slate-800 border-b border-slate-700 shrink-0">
@@ -1112,12 +1121,19 @@ function app() {
         const answer = run.final_text || run.output_json?.final_text || run.output_json?.answer || run.output_json?.summary || '(Sin respuesta del agente)';
         const stepsResp = await this.api('GET', `/api/runs/${runId}/steps/`);
         const steps = stepsResp.ok ? (stepsResp.data?.results || stepsResp.data || []) : [];
-        this.chat.messages.push({ role:'agent', content: answer||'(Sin respuesta)', runId, steps: steps.slice(0,10) });
+        const hasFinalSql = !!run.final_sql;
+        this.chat.messages.push({ role:'agent', content: answer||'(Sin respuesta)', runId, steps: steps.slice(0,10), hasFinalSql });
         if (this.page === 'runs') this.loadRuns();
-        // Mostrar geometrías GeoJSON si las hay en los steps
+        // Siempre mostrar las geometrías de capas consultadas (contexto de fondo)
         this.extractAndAddGeoJsonFromSteps(steps, 'chat');
-        // Auto-fetch geometrías de las capas consultadas y pintarlas en el mapa
         this.autoFetchLayerGeoms(steps, this.chat.mapContext.bbox, this.chat.agentId);
+        // Si hay final_sql, pintar también el resultado analítico encima
+        if (hasFinalSql) {
+          const geoR = await this.api('GET', `/api/runs/${runId}/geojson/`);
+          if (geoR.ok && geoR.data.features?.length > 0) {
+            this.addFinalGeoJsonToMap(geoR.data.features, 'chat');
+          }
+        }
       } catch(e) {
         this.chat.messages.push({ role:'agent', content:`Error: ${e.message}` });
       } finally {
@@ -1127,6 +1143,20 @@ function app() {
 
     scrollChat() {
       this.$nextTick(() => { const el = document.getElementById('chat-messages'); if(el) el.scrollTop = el.scrollHeight; });
+    },
+
+    async chatShowOnMap(runId) {
+      const r = await this.api('GET', `/api/runs/${runId}/geojson/`);
+      if (r.ok && r.data.features?.length > 0) {
+        this.clearChatMapFeatures();
+        this.addFinalGeoJsonToMap(r.data.features, 'chat');
+      } else if (!r.ok) {
+        const msg = r.data?.error || JSON.stringify(r.data);
+        this.showToast(`Error GeoJSON: ${msg}`, 'error');
+        console.error('geojson endpoint error:', r.data);
+      } else {
+        this.showToast('El resultado no contiene geometrías visualizables (0 features)', 'error');
+      }
     },
 
     extractAndAddGeoJsonFromSteps(steps, target='map') {
@@ -1313,9 +1343,71 @@ function app() {
       if (r.ok) { await this.selectRun(r.data); this.showToast('Run ejecutado'); }
       else this.showToast('Error al ejecutar run','error');
     },
-    showRunOnMap(run) {
+    async showRunOnMap(run) {
       this.setPage('map');
-      this.$nextTick(() => this.extractAndAddGeoJsonFromSteps(this.runs.trace, 'map'));
+      // Si el run tiene final_sql, usar el endpoint /geojson/ para visualización rica
+      if (run.final_sql) {
+        this.$nextTick(async () => {
+          const r = await this.api('GET', `/api/runs/${run.id}/geojson/`);
+          if (r.ok && r.data.features?.length > 0) {
+            this.addFinalGeoJsonToMap(r.data.features, 'map');
+          } else {
+            // Fallback a la extracción de steps si /geojson/ falla o no devuelve features
+            this.extractAndAddGeoJsonFromSteps(this.runs.trace, 'map');
+          }
+        });
+      } else {
+        this.$nextTick(() => this.extractAndAddGeoJsonFromSteps(this.runs.trace, 'map'));
+      }
+    },
+
+    // Estilos por _feature_type para el GeoJSON del endpoint /geojson/
+    _featureTypeStyle(featureType) {
+      const FEATURE_TYPE_STYLES = {
+        'result':     { color: '#6366f1', weight: 2, fillColor: '#6366f1', fillOpacity: 0.4, radius: 7 },
+        'source':     { color: '#10b981', weight: 2, fillColor: '#10b981', fillOpacity: 0.5, radius: 6 },
+        'neighbor':   { color: '#f59e0b', weight: 2, fillColor: '#f59e0b', fillOpacity: 0.5, radius: 6 },
+        'connection': { color: '#94a3b8', weight: 1.5, dashArray: '4 4', fillOpacity: 0 },
+      };
+      return FEATURE_TYPE_STYLES[featureType] || FEATURE_TYPE_STYLES['result'];
+    },
+
+    addFinalGeoJsonToMap(features, target) {
+      const mapInst = target === 'chat' ? this.chatMapInstance : this.mapInstance;
+      const mapLyr  = target === 'chat' ? this.chatMapLayer    : this.mapLayer;
+      const featArr = target === 'chat' ? this.chatMapFeatures  : this.mapFeatures;
+      if (!mapInst || !mapLyr) return;
+      const added = [];
+      for (const f of features) {
+        try {
+          const ft_type = (f.properties || {})._feature_type || 'result';
+          const style = this._featureTypeStyle(ft_type);
+          const layer = L.geoJSON(f, {
+            style: { color: style.color, weight: style.weight, fillColor: style.fillColor,
+                     fillOpacity: style.fillOpacity, dashArray: style.dashArray },
+            pointToLayer: (_, ll) => L.circleMarker(ll, {
+              radius: style.radius || 6,
+              color: style.color, fillColor: style.fillColor,
+              fillOpacity: style.fillOpacity, weight: style.weight,
+            }),
+            onEachFeature: (ft, lyr) => {
+              const props = ft.properties || {};
+              const html = Object.entries(props)
+                .filter(([k]) => !k.startsWith('_') && !k.endsWith('_geojson'))
+                .slice(0, 15)
+                .map(([k, v]) => `<b>${k}:</b> ${v ?? ''}`)
+                .join('<br>');
+              if (html) lyr.bindPopup(`<div style="font-size:11px;max-height:200px;overflow:auto;max-width:240px">${html}</div>`);
+            },
+          });
+          mapLyr.addLayer(layer);
+          added.push(f);
+          featArr.push(f);
+        } catch {}
+      }
+      if (added.length > 0) {
+        try { mapInst.fitBounds(mapLyr.getBounds(), { padding: [20, 20], maxZoom: 18 }); } catch {}
+      }
     },
     openTrace(runId) {
       const run = this.runs.list.find(r => r.id === runId);

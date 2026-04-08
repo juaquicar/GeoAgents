@@ -19,7 +19,7 @@ def classify_goal_domain(goal: str, tools_used: Sequence[str] | None = None) -> 
 
     # Red / topología
     if any(t in tools_used for t in ("spatial.network_trace", "spatial.route_cost", "spatial.network_service_area")) or any(
-        token in normalized for token in ("traza", "trace", "network", "grafo", "topolog", "ruta de red", "conectividad")
+        token in normalized for token in ("traza", "trace", "network", "grafo", "topolog", "ruta de red", "conectividad", " red")
     ):
         return "network"
 

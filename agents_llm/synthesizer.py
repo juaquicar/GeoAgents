@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 import json
 
-from .client import chat_completion_text
+from .client import chat_completion_json, chat_completion_text
 
 
 SYNTHESIZER_SYSTEM_PROMPT = """
@@ -67,6 +67,52 @@ Si session_context está presente:
 - Si el turno anterior encontró N elementos y el actual refina la búsqueda, puedes hacer referencia al análisis previo de forma natural.
 - No repitas literalmente el contenido del turno anterior; sintetiza el progreso de la conversación.
 - Si un turno previo tiene ok=false, no lo menciones como resultado previo válido.
+"""
+
+SYNTHESIZER_SQL_ADDENDUM = """
+Además de final_text, debes generar final_sql: una sentencia SELECT PostGIS que represente
+visualmente el resultado en un mapa GeoJSON.
+
+Reglas OBLIGATORIAS para final_sql:
+
+1. GEOMETRÍA siempre en WGS84 (EPSG:4326) para ST_AsGeoJSON:
+   - Si SRID de la capa es 4326:  ST_AsGeoJSON(t.geom_col) AS geom_geojson
+   - Si SRID es distinto de 4326: ST_AsGeoJSON(ST_Transform(t.geom_col, 4326)) AS geom_geojson
+   NUNCA pases directamente una geometría en SRID proyectado a ST_AsGeoJSON.
+
+2. FILTRO ESPACIAL (si hay bbox en map_context):
+   El bbox del user_prompt está en WGS84 (grados). Si la capa está en SRID proyectado,
+   DEBES transformar el envelope al SRID de la capa:
+   - Capa en 4326:   ST_Intersects(t.geom, ST_MakeEnvelope(west, south, east, north, 4326))
+   - Capa en 25830:  ST_Intersects(t.geom, ST_Transform(ST_MakeEnvelope(west, south, east, north, 4326), 25830))
+   - Capa en 3857:   ST_Intersects(t.geom, ST_Transform(ST_MakeEnvelope(west, south, east, north, 4326), 3857))
+   NUNCA uses ST_MakeEnvelope con coordenadas en grados y SRID proyectado.
+
+3. COLUMNA _feature_type (siempre incluir):
+   - 'result'     — feature principal del resultado
+   - 'source'     — feature origen en nearest_neighbor o within_distance
+   - 'neighbor'   — feature vecino/referencia
+   - 'connection' — línea ST_MakeLine que une source y neighbor
+
+4. LIMIT: usa LIMIT :limit (el backend lo sustituirá). No pongas un número fijo.
+
+5. Solo tablas del catálogo del agente (campo gis_layers_catalog). Solo lectura.
+
+6. Para nearest_neighbor o within_distance, genera UNION ALL con:
+   - SELECT source features ... 'source' AS _feature_type
+   - UNION ALL SELECT neighbor features ... 'neighbor' AS _feature_type
+   - UNION ALL SELECT ST_AsGeoJSON(ST_MakeLine(...)) ... 'connection' AS _feature_type
+
+7. Si no hay información suficiente para generar una query correcta, devuelve final_sql = "".
+
+Catálogo de capas en gis_layers_catalog (nombre, tabla, schema, geom_col, id_col, srid).
+Usa schema.tabla (ej: public.span) en el FROM.
+
+Devuelve un JSON con exactamente dos claves:
+{
+  "final_text": "...",
+  "final_sql": "SELECT ..."
+}
 """
 
 
@@ -1284,6 +1330,8 @@ def build_synthesizer_user_prompt(
     plan: Dict[str, Any],
     step_outputs: List[Dict[str, Any]],
     session_context: List[Dict[str, Any]] | None = None,
+    gis_layers_catalog: List[Dict[str, Any]] | None = None,
+    map_context: Dict[str, Any] | None = None,
 ) -> str:
     executed_tool_names = [
         step.get("name")
@@ -1314,6 +1362,27 @@ def build_synthesizer_user_prompt(
         ]
         if prev:
             payload["session_context"] = prev
+
+    if gis_layers_catalog:
+        # Resumen compacto del catálogo para orientar la generación de SQL
+        catalog_summary = [
+            {
+                "name": layer.get("name"),
+                "table": layer.get("table"),
+                "schema": layer.get("schema"),
+                "geom_col": layer.get("geom_col", "the_geom"),
+                "id_col": layer.get("id_col", "id"),
+                "srid": layer.get("srid", 4326),
+            }
+            for layer in gis_layers_catalog
+            if layer.get("name") and layer.get("table")
+        ]
+        if catalog_summary:
+            payload["gis_layers_catalog"] = catalog_summary
+
+    if map_context:
+        payload["map_context"] = map_context
+
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -1325,7 +1394,13 @@ def synthesize_run(
     plan: Dict[str, Any],
     step_outputs: List[Dict[str, Any]],
     session_context: List[Dict[str, Any]] | None = None,
-) -> str:
+    gis_layers_catalog: List[Dict[str, Any]] | None = None,
+    map_context: Dict[str, Any] | None = None,
+) -> Dict[str, str]:
+    """
+    Devuelve un dict con 'final_text' y 'final_sql'.
+    'final_sql' puede ser cadena vacía si el LLM no genera query útil.
+    """
     user_prompt = build_synthesizer_user_prompt(
         goal=goal,
         agent_name=agent_name,
@@ -1333,9 +1408,16 @@ def synthesize_run(
         plan=plan,
         step_outputs=step_outputs,
         session_context=session_context,
+        gis_layers_catalog=gis_layers_catalog,
+        map_context=map_context,
     )
-    return chat_completion_text(
-        system_prompt=SYNTHESIZER_SYSTEM_PROMPT,
+    system_prompt = SYNTHESIZER_SYSTEM_PROMPT + SYNTHESIZER_SQL_ADDENDUM
+    result = chat_completion_json(
+        system_prompt=system_prompt,
         user_prompt=user_prompt,
         temperature=0.1,
     )
+    return {
+        "final_text": str(result.get("final_text") or ""),
+        "final_sql": str(result.get("final_sql") or ""),
+    }

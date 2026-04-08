@@ -152,6 +152,90 @@ class RunViewSet(viewsets.ModelViewSet):
         run = self.get_object()
         return Response(RunTraceSerializer(run).data)
 
+    @action(detail=True, methods=["get"])
+    def geojson(self, request, pk=None):
+        """
+        GET /api/runs/{id}/geojson/
+        Ejecuta final_sql del run y devuelve un GeoJSON FeatureCollection.
+        Requiere que el run tenga final_sql no vacío.
+        """
+        from django.conf import settings as dj_settings
+        from agents_gis.context import set_agent_context, _current_agent
+        from agents_gis.service import get_gis_connection
+        from .sql_guard import validate_sql
+
+        run = self.get_object()
+
+        if not run.final_sql:
+            return Response(
+                {"error": "Este run no tiene final_sql disponible."},
+                status=400,
+            )
+
+        limit = getattr(dj_settings, "AGENTS_FINAL_GEOJSON_LIMIT", 100)
+
+        # Sustituir el placeholder :limit por el valor real
+        sql = run.final_sql.replace(":limit", str(int(limit)))
+
+        # Validar de nuevo contra el catálogo actual del agente (defensa en profundidad)
+        catalog = list(run.agent.gis_layers_catalog or [])
+        allowed_tables = [layer.get("table") for layer in catalog if layer.get("table")]
+        try:
+            sql = validate_sql(sql, allowed_tables=allowed_tables or None)
+        except ValueError as exc:
+            return Response({"error": f"SQL no válido: {exc}"}, status=400)
+
+        # Asegurarse de que hay LIMIT en la query (protección ante SQL sin LIMIT)
+        import re as _re
+        if not _re.search(r"\bLIMIT\b", sql, _re.IGNORECASE):
+            sql = f"{sql.rstrip(';')} LIMIT {limit}"
+
+        # Inyectar contexto GIS del agente para usar su conexión
+        _ctx_token = set_agent_context(run.agent)
+        try:
+            conn = get_gis_connection()
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                cols = [desc[0] for desc in cur.description]
+                rows = cur.fetchall()
+        except Exception as exc:
+            return Response({"error": f"Error ejecutando SQL: {exc}"}, status=500)
+        finally:
+            _current_agent.reset(_ctx_token)
+
+        features = []
+        for row in rows:
+            row_dict = dict(zip(cols, row))
+            geom_geojson = row_dict.pop("geom_geojson", None)
+            if not geom_geojson:
+                continue
+            import json as _json
+            try:
+                geometry = _json.loads(geom_geojson) if isinstance(geom_geojson, str) else geom_geojson
+            except Exception:
+                continue
+            # Serializar valores no-JSON-nativos
+            props = {}
+            for k, v in row_dict.items():
+                if hasattr(v, "__float__") and not isinstance(v, (int, float, bool)):
+                    props[k] = float(v)
+                elif v is None or isinstance(v, (str, int, float, bool)):
+                    props[k] = v
+                else:
+                    props[k] = str(v)
+            features.append({
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": props,
+            })
+
+        return Response({
+            "type": "FeatureCollection",
+            "features": features,
+            "run_id": run.pk,
+            "total": len(features),
+        })
+
     @action(detail=True, methods=["post"])
     def feedback(self, request, pk=None):
         """

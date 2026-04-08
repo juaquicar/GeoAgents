@@ -94,6 +94,7 @@ class Run(models.Model):
     step_seq = models.PositiveIntegerField(default=0)
 
     final_text = models.TextField(blank=True, default="")
+    final_sql = models.TextField(blank=True, default="")
 
     # Identificador de sesión conversacional.
     # Runs con el mismo session_id forman una conversación multi-turno.

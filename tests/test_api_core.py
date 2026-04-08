@@ -362,7 +362,7 @@ class AgentsCoreApiTests(APITestCase):
 
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
-    @patch("agents_core.runner.synthesize_run", return_value="síntesis desde API")
+    @patch("agents_core.runner.synthesize_run", return_value={"final_text": "síntesis desde API", "final_sql": ""})
     def test_full_execute_flow_persists_steps_and_trace_is_visible(
         self, _mock_synthesize_run, mock_plan_run, mock_invoke_tool
     ):
@@ -547,7 +547,7 @@ class AgentsCoreApiTests(APITestCase):
 
     # ── Flujo refutado (verificación fallida + replan) ────────────────────────
 
-    @patch("agents_core.runner.synthesize_run", return_value="síntesis refutada")
+    @patch("agents_core.runner.synthesize_run", return_value={"final_text": "síntesis refutada", "final_sql": ""})
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
     def test_full_execute_flow_persists_refuted_memory_and_episode(
@@ -682,7 +682,7 @@ class AgentsCoreApiTests(APITestCase):
 
     # ── Replan por fallo de tool ─────────────────────────────────────────────
 
-    @patch("agents_core.runner.synthesize_run", return_value="síntesis tras replan")
+    @patch("agents_core.runner.synthesize_run", return_value={"final_text": "síntesis tras replan", "final_sql": ""})
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
     def test_tool_failure_with_abort_policy_triggers_replan(
@@ -747,7 +747,7 @@ class AgentsCoreApiTests(APITestCase):
         self.assertEqual(exec_ctx["replan_reason"], "tool_failed")
         self.assertIn("layer not found", exec_ctx["replan_hint"])
 
-    @patch("agents_core.runner.synthesize_run", return_value="síntesis sin replan")
+    @patch("agents_core.runner.synthesize_run", return_value={"final_text": "síntesis sin replan", "final_sql": ""})
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
     def test_tool_failure_with_continue_policy_does_not_replan(
@@ -867,7 +867,7 @@ class ParallelStepsTests(APITestCase):
         )
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
 
-    @patch("agents_core.runner.synthesize_run", return_value="síntesis paralela")
+    @patch("agents_core.runner.synthesize_run", return_value={"final_text": "síntesis paralela", "final_sql": ""})
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
     def test_independent_steps_execute_and_collect_both_results(
@@ -917,7 +917,7 @@ class ParallelStepsTests(APITestCase):
         self.assertIn("spatial.query_layer", names)
         self.assertIn("spatial.nearby", names)
 
-    @patch("agents_core.runner.synthesize_run", return_value="síntesis secuencial")
+    @patch("agents_core.runner.synthesize_run", return_value={"final_text": "síntesis secuencial", "final_sql": ""})
     @patch("agents_core.runner.invoke_tool")
     @patch("agents_core.runner.plan_run")
     def test_dependent_steps_execute_sequentially(

@@ -225,5 +225,8 @@ AGENTS_DEFAULT_LLM_MODEL = os.getenv(
 AGENTS_MAX_PLANNER_TOOL_STEPS = int(
     os.getenv("AGENTS_MAX_PLANNER_TOOL_STEPS", "5")
 )
+AGENTS_FINAL_GEOJSON_LIMIT = int(
+    os.getenv("AGENTS_FINAL_GEOJSON_LIMIT", "100")
+)
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY not configured")

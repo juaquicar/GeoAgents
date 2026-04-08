@@ -15,6 +15,7 @@ from agents_tools.base import ToolResult
 from agents_tools.executor import invoke_tool
 from agents_llm.planner import plan_run
 from agents_llm.synthesizer import synthesize_run
+from .sql_guard import validate_sql
 
 
 MAX_PLANNER_TOOL_STEPS = getattr(settings, "AGENTS_MAX_PLANNER_TOOL_STEPS", 5)
@@ -833,21 +834,38 @@ def execute_run(run: Run) -> Run:
                     break
 
             from agents_llm.planner import _build_session_context
-            final_text = synthesize_run(
+            gis_layers_catalog = list(getattr(run.agent, "gis_layers_catalog", None) or [])
+            map_context = payload.get("map_context") or {}
+            synthesis = synthesize_run(
                 goal=goal,
                 agent_name=run.agent.name,
                 agent_profile=getattr(run.agent, "profile", "compact"),
                 plan=plan,
                 step_outputs=executed_outputs,
                 session_context=_build_session_context(run),
+                gis_layers_catalog=gis_layers_catalog,
+                map_context=map_context or None,
             )
+            final_text = synthesis["final_text"]
+            raw_sql = synthesis["final_sql"]
+
+            # Validar SQL antes de persistir (rechazar si no es seguro)
+            final_sql = ""
+            if raw_sql:
+                allowed_tables = [
+                    layer.get("table") for layer in gis_layers_catalog if layer.get("table")
+                ]
+                try:
+                    final_sql = validate_sql(raw_sql, allowed_tables=allowed_tables or None)
+                except ValueError:
+                    final_sql = ""
 
             log_step(
                 run,
                 kind="llm",
                 name="llm.synthesize",
                 input_json={"goal": goal, "step_outputs": executed_outputs},
-                output_json={"final_text": final_text},
+                output_json={"final_text": final_text, "final_sql": final_sql},
             )
 
             verification_summary = _summarize_verification(executed_outputs)
@@ -873,10 +891,11 @@ def execute_run(run: Run) -> Run:
 
             run.output_json = result
             run.final_text = final_text
+            run.final_sql = final_sql
             run.status = "succeeded"
             run.error = ""
             run.ended_at = timezone.now()
-            run.save(update_fields=["output_json", "final_text", "status", "error", "ended_at"])
+            run.save(update_fields=["output_json", "final_text", "final_sql", "status", "error", "ended_at"])
             persist_run_intelligence(run)
 
             log_step(

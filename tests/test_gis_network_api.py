@@ -301,7 +301,7 @@ class NetworkServiceAreaApiTests(APITestCase):
     @patch("agents_core.runner.plan_run")
     @patch(
         "agents_core.runner.synthesize_run",
-        return_value="La red cubre 2 tramos desde el origen, alcanzando el 57% de la longitud total.",
+        return_value={"final_text": "La red cubre 2 tramos desde el origen, alcanzando el 57% de la longitud total.", "final_sql": ""},
     )
     def test_full_planner_flow_network_service_area_returns_final_text(
         self,
