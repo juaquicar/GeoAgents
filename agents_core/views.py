@@ -12,6 +12,49 @@ from .serializers import (
 from .runner import execute_run
 
 
+def _fix_envelope_srid(sql: str, catalog: list) -> str:
+    """
+    Corrige el SRID en llamadas ST_MakeEnvelope(..., 4326) que no estén ya
+    envueltas en ST_Transform cuando la capa referenciada tiene un SRID distinto
+    de 4326 (p.ej. 25830 UTM).
+
+    Sin esta corrección, ST_Intersects(geom_25830, envelope_4326) devuelve
+    siempre 0 filas porque PostGIS compara coordenadas en proyecciones distintas.
+    """
+    import re
+
+    # Tablas referenciadas en FROM/JOIN (sin schema prefix)
+    table_re = re.compile(r'\b(?:FROM|JOIN)\s+(?:\w+\.)?(\w+)\b', re.IGNORECASE)
+    referenced = {m.group(1).lower() for m in table_re.finditer(sql)}
+
+    # Buscar SRID de la primera capa catalogada que no sea 4326
+    layer_srid = None
+    for layer in catalog:
+        table = (layer.get("table") or "").lower().split(".")[-1]
+        if table in referenced:
+            srid = layer.get("srid")
+            if srid and int(srid) != 4326:
+                layer_srid = int(srid)
+                break
+
+    if not layer_srid:
+        return sql
+
+    envelope_re = re.compile(
+        r'ST_MakeEnvelope\(\s*[-\d.]+\s*,\s*[-\d.]+\s*,\s*[-\d.]+\s*,\s*[-\d.]+\s*,\s*4326\s*\)',
+        re.IGNORECASE,
+    )
+
+    def maybe_wrap(m):
+        # No envolver si ya está dentro de ST_Transform(
+        before = sql[: m.start()]
+        if re.search(r'ST_Transform\s*\(\s*$', before, re.IGNORECASE):
+            return m.group(0)
+        return f"ST_Transform({m.group(0)}, {layer_srid})"
+
+    return envelope_re.sub(maybe_wrap, sql)
+
+
 def _apply_feedback_to_episode(run, rating: int) -> None:
     """
     Actualiza Episode.success con la valoración del usuario y recalcula
@@ -159,6 +202,7 @@ class RunViewSet(viewsets.ModelViewSet):
         Ejecuta final_sql del run y devuelve un GeoJSON FeatureCollection.
         Requiere que el run tenga final_sql no vacío.
         """
+        import re as _re
         from django.conf import settings as dj_settings
         from agents_gis.context import set_agent_context, _current_agent
         from agents_gis.service import get_gis_connection
@@ -185,8 +229,11 @@ class RunViewSet(viewsets.ModelViewSet):
         except ValueError as exc:
             return Response({"error": f"SQL no válido: {exc}"}, status=400)
 
+        # Corregir SRID: si la capa tiene SRID ≠ 4326, envolver ST_MakeEnvelope(...,4326)
+        # desnudos en ST_Transform para evitar 0 resultados por incompatibilidad de SRID
+        sql = _fix_envelope_srid(sql, catalog)
+
         # Asegurarse de que hay LIMIT en la query (protección ante SQL sin LIMIT)
-        import re as _re
         if not _re.search(r"\bLIMIT\b", sql, _re.IGNORECASE):
             sql = f"{sql.rstrip(';')} LIMIT {limit}"
 

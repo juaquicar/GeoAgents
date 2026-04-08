@@ -1364,51 +1364,97 @@ function app() {
     // Estilos por _feature_type para el GeoJSON del endpoint /geojson/
     _featureTypeStyle(featureType) {
       const FEATURE_TYPE_STYLES = {
-        'result':     { color: '#6366f1', weight: 2, fillColor: '#6366f1', fillOpacity: 0.4, radius: 7 },
-        'source':     { color: '#10b981', weight: 2, fillColor: '#10b981', fillOpacity: 0.5, radius: 6 },
-        'neighbor':   { color: '#f59e0b', weight: 2, fillColor: '#f59e0b', fillOpacity: 0.5, radius: 6 },
-        'connection': { color: '#94a3b8', weight: 1.5, dashArray: '4 4', fillOpacity: 0 },
+        // Resultado principal: amarillo brillante, línea gruesa — máxima visibilidad
+        'result':     { color: '#facc15', weight: 5, fillColor: '#facc15', fillOpacity: 0.55, radius: 8,
+                        outlineColor: '#92400e', outlineWeight: 1 },
+        // Origen del análisis (nearest_neighbor, within_distance…): verde
+        'source':     { color: '#22c55e', weight: 3, fillColor: '#22c55e', fillOpacity: 0.8, radius: 8 },
+        // Vecino / referencia: naranja
+        'neighbor':   { color: '#f97316', weight: 3, fillColor: '#f97316', fillOpacity: 0.8, radius: 8 },
+        // Línea de conexión: blanco roto punteado
+        'connection': { color: '#e2e8f0', weight: 2, dashArray: '6 4', fillOpacity: 0, radius: 0 },
       };
       return FEATURE_TYPE_STYLES[featureType] || FEATURE_TYPE_STYLES['result'];
     },
+
+    // Capa temporal de highlights (se borra entre llamadas para no acumular)
+    _highlightLayer: null,
 
     addFinalGeoJsonToMap(features, target) {
       const mapInst = target === 'chat' ? this.chatMapInstance : this.mapInstance;
       const mapLyr  = target === 'chat' ? this.chatMapLayer    : this.mapLayer;
       const featArr = target === 'chat' ? this.chatMapFeatures  : this.mapFeatures;
       if (!mapInst || !mapLyr) return;
-      const added = [];
+
+      // Eliminar highlight anterior (si lo hay) sin tocar las capas de fondo
+      if (this._highlightLayer) {
+        try { mapInst.removeLayer(this._highlightLayer); } catch {}
+        this._highlightLayer = null;
+      }
+
+      // Crear grupo dedicado para el highlight
+      const highlightGroup = L.layerGroup().addTo(mapInst);
+      this._highlightLayer = highlightGroup;
+
+      const highlightBounds = [];
+
       for (const f of features) {
         try {
           const ft_type = (f.properties || {})._feature_type || 'result';
           const style = this._featureTypeStyle(ft_type);
-          const layer = L.geoJSON(f, {
-            style: { color: style.color, weight: style.weight, fillColor: style.fillColor,
-                     fillOpacity: style.fillOpacity, dashArray: style.dashArray },
-            pointToLayer: (_, ll) => L.circleMarker(ll, {
-              radius: style.radius || 6,
-              color: style.color, fillColor: style.fillColor,
-              fillOpacity: style.fillOpacity, weight: style.weight,
-            }),
-            onEachFeature: (ft, lyr) => {
+          const lyr = L.geoJSON(f, {
+            style: {
+              color: style.color,
+              weight: style.weight,
+              fillColor: style.fillColor,
+              fillOpacity: style.fillOpacity,
+              dashArray: style.dashArray,
+              // Halo oscuro para contraste sobre fondos claros
+              opacity: 1,
+            },
+            pointToLayer: (_, ll) => {
+              // Círculo con borde oscuro para visibilidad sobre cualquier fondo
+              return L.circleMarker(ll, {
+                radius: style.radius || 8,
+                color: '#1e293b',
+                weight: 2,
+                fillColor: style.fillColor || style.color,
+                fillOpacity: style.fillOpacity,
+              });
+            },
+            onEachFeature: (ft, layer) => {
               const props = ft.properties || {};
+              const _labels = { result:'Resultado', source:'Origen', neighbor:'Vecino', connection:'Conexión' };
+              const label = _labels[ft_type] || ft_type;
               const html = Object.entries(props)
                 .filter(([k]) => !k.startsWith('_') && !k.endsWith('_geojson'))
                 .slice(0, 15)
                 .map(([k, v]) => `<b>${k}:</b> ${v ?? ''}`)
                 .join('<br>');
-              if (html) lyr.bindPopup(`<div style="font-size:11px;max-height:200px;overflow:auto;max-width:240px">${html}</div>`);
+              layer.bindPopup(
+                `<div style="font-size:11px;max-height:200px;overflow:auto;max-width:260px">` +
+                `<span style="color:${style.color};font-weight:700">${label}</span><br>${html}</div>`
+              );
+              try {
+                const b = layer.getBounds ? layer.getBounds() : null;
+                if (b) highlightBounds.push(b);
+              } catch {}
             },
           });
-          mapLyr.addLayer(layer);
-          added.push(f);
+          highlightGroup.addLayer(lyr);
           featArr.push(f);
         } catch {}
       }
-      if (added.length > 0) {
-        try { mapInst.fitBounds(mapLyr.getBounds(), { padding: [20, 20], maxZoom: 18 }); } catch {}
+
+      // Centrar mapa en los highlights
+      if (highlightBounds.length > 0) {
+        try {
+          const combined = highlightBounds.reduce((acc, b) => acc.extend(b), L.latLngBounds(highlightBounds[0]));
+          mapInst.fitBounds(combined, { padding: [40, 40], maxZoom: 19 });
+        } catch {}
       }
     },
+
     openTrace(runId) {
       const run = this.runs.list.find(r => r.id === runId);
       if (run) { this.selectRun(run); this.setPage('runs'); }

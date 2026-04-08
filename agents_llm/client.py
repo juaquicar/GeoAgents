@@ -22,14 +22,22 @@ def get_openai_client() -> OpenAI:
     return OpenAI(api_key=settings.OPENAI_API_KEY, timeout=timeout)
 
 
+def get_openai_client_with_timeout(timeout: float) -> OpenAI:
+    return OpenAI(api_key=settings.OPENAI_API_KEY, timeout=timeout)
+
+
 def chat_completion_json(
     *,
     system_prompt: str,
     user_prompt: str,
     model: Optional[str] = None,
     temperature: float = 0.2,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
-    client = get_openai_client()
+    if timeout is not None:
+        client = get_openai_client_with_timeout(timeout)
+    else:
+        client = get_openai_client()
 
     response = client.chat.completions.create(
         model=model or getattr(settings, "AGENTS_DEFAULT_LLM_MODEL", "gpt-4o-mini"),

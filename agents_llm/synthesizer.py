@@ -70,45 +70,58 @@ Si session_context está presente:
 """
 
 SYNTHESIZER_SQL_ADDENDUM = """
-Además de final_text, debes generar final_sql: una sentencia SELECT PostGIS que represente
-visualmente el resultado en un mapa GeoJSON.
+Además de final_text, debes generar final_sql: una sentencia SELECT PostGIS que RESALTE
+visualmente el resultado del análisis sobre el mapa (no todas las features del área,
+sino exactamente las que forman el resultado: los tramos de la ruta, los elementos
+encontrados, las líneas de conexión, etc.).
 
-Reglas OBLIGATORIAS para final_sql:
+══════════════════════════════════════════════════════
+PRINCIPIO CLAVE: usa los datos concretos de los steps
+══════════════════════════════════════════════════════
+Los structured_facts y tool_facts contienen los resultados reales de las tools.
+Extrae de ahí los IDs, coordenadas o atributos que identifican las features del resultado,
+y úsalos en la WHERE clause con IN (...) o condiciones exactas.
 
-1. GEOMETRÍA siempre en WGS84 (EPSG:4326) para ST_AsGeoJSON:
-   - Si SRID de la capa es 4326:  ST_AsGeoJSON(t.geom_col) AS geom_geojson
-   - Si SRID es distinto de 4326: ST_AsGeoJSON(ST_Transform(t.geom_col, 4326)) AS geom_geojson
-   NUNCA pases directamente una geometría en SRID proyectado a ST_AsGeoJSON.
+Ejemplos por tool:
+- spatial.network_trace / route_cost → los "path_segments" tienen IDs de tramos;
+  usa WHERE id IN (id1, id2, id3, ...) para devolver solo esos tramos con _feature_type='result'
+- spatial.nearest_neighbor → src_fid e nbr_fid identifican el par más cercano;
+  UNION ALL: source WHERE id=src_fid ('source'), neighbor WHERE id=nbr_fid ('neighbor'),
+  línea ST_MakeLine(centroide_src, centroide_nbr) ('connection')
+- spatial.within_distance / intersects → usa los fid devueltos con WHERE id IN (...)
+- spatial.query_layer / context_pack → features del resultado con WHERE id IN (...)
+  Si hay demasiados, usa WHERE + filtro del bbox con ST_Intersects
 
-2. FILTRO ESPACIAL (si hay bbox en map_context):
-   El bbox del user_prompt está en WGS84 (grados). Si la capa está en SRID proyectado,
-   DEBES transformar el envelope al SRID de la capa:
-   - Capa en 4326:   ST_Intersects(t.geom, ST_MakeEnvelope(west, south, east, north, 4326))
-   - Capa en 25830:  ST_Intersects(t.geom, ST_Transform(ST_MakeEnvelope(west, south, east, north, 4326), 25830))
-   - Capa en 3857:   ST_Intersects(t.geom, ST_Transform(ST_MakeEnvelope(west, south, east, north, 4326), 3857))
+══════════════════════════════════════════════════════
+REGLAS OBLIGATORIAS DE SQL
+══════════════════════════════════════════════════════
+1. SELECT: EXACTAMENTE tres columnas, ni una más:
+   a) ST_AsGeoJSON(ST_Transform(t.<geom_col>, 4326)) AS geom_geojson
+      (si SRID ya es 4326: ST_AsGeoJSON(t.<geom_col>) AS geom_geojson)
+   b) t.<id_col> AS fid
+   c) '<feature_type>' AS _feature_type
+   NUNCA añadas otras columnas de atributos — causarán errores si no existen.
+
+2. FILTRO ESPACIAL con bbox — SIEMPRE incluirlo:
+   El bbox viene en map_context.bbox en WGS84 (west, south, east, north en grados).
+   - Capa en 4326:   AND ST_Intersects(t.<geom_col>, ST_MakeEnvelope(west, south, east, north, 4326))
+   - Capa en 25830:  AND ST_Intersects(t.<geom_col>, ST_Transform(ST_MakeEnvelope(west, south, east, north, 4326), 25830))
    NUNCA uses ST_MakeEnvelope con coordenadas en grados y SRID proyectado.
 
-3. COLUMNA _feature_type (siempre incluir):
-   - 'result'     — feature principal del resultado
-   - 'source'     — feature origen en nearest_neighbor o within_distance
-   - 'neighbor'   — feature vecino/referencia
-   - 'connection' — línea ST_MakeLine que une source y neighbor
+3. WHERE con IDs concretos (cuando los tengas de los structured_facts):
+   AND t.<id_col> IN (id1, id2, ...)
 
-4. LIMIT: usa LIMIT :limit (el backend lo sustituirá). No pongas un número fijo.
+4. LIMIT :limit al final.
 
-5. Solo tablas del catálogo del agente (campo gis_layers_catalog). Solo lectura.
+5. Solo tablas de gis_layers_catalog. Usa schema.tabla en el FROM. Solo lectura.
 
-6. Para nearest_neighbor o within_distance, genera UNION ALL con:
-   - SELECT source features ... 'source' AS _feature_type
-   - UNION ALL SELECT neighbor features ... 'neighbor' AS _feature_type
-   - UNION ALL SELECT ST_AsGeoJSON(ST_MakeLine(...)) ... 'connection' AS _feature_type
+6. Para nearest_neighbor/within_distance usa UNION ALL:
+   SELECT geom, id, 'source' ... UNION ALL SELECT geom, id, 'neighbor' ... UNION ALL SELECT ST_MakeLine(...), null, 'connection'
 
-7. Si no hay información suficiente para generar una query correcta, devuelve final_sql = "".
+7. Si no hay datos suficientes devuelve final_sql = "".
 
-Catálogo de capas en gis_layers_catalog (nombre, tabla, schema, geom_col, id_col, srid).
-Usa schema.tabla (ej: public.span) en el FROM.
-
-Devuelve un JSON con exactamente dos claves:
+══════════════════════════════════════════════════════
+Devuelve exactamente este JSON:
 {
   "final_text": "...",
   "final_sql": "SELECT ..."
@@ -925,7 +938,7 @@ def _extract_query_layer_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
         total = len(items)
 
     sample = []
-    for feat in items[:10]:
+    for feat in items[:3]:
         lon = feat.get("lon")
         lat = feat.get("lat")
         sample.append(
@@ -940,10 +953,14 @@ def _extract_query_layer_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
+    # Todos los IDs — el LLM los necesita para generar WHERE id IN (...)
+    all_ids = [feat.get("id") for feat in items if feat.get("id") is not None]
+
     return {
         "tool": "spatial.query_layer",
         "layer": data.get("layer"),
         "total_features": total,
+        "result_ids": all_ids[:50],
         "sample": sample,
     }
 
@@ -958,7 +975,7 @@ def _extract_nearby_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
         total = len(items)
 
     sample = []
-    for feat in items[:10]:
+    for feat in items[:3]:
         sample.append(
             {
                 "id": feat.get("id"),
@@ -976,12 +993,15 @@ def _extract_nearby_facts(step_output: Dict[str, Any]) -> Dict[str, Any]:
             "distance_m": f.get("distance_m"),
         }
 
+    all_ids = [feat.get("id") for feat in items if feat.get("id") is not None]
+
     return {
         "tool": "spatial.nearby",
         "layer": data.get("layer"),
         "radius_m": data.get("radius_m"),
         "point": data.get("point"),
         "total_features": total,
+        "result_ids": all_ids[:50],
         "closest": closest,
         "sample": sample,
     }
@@ -1343,12 +1363,19 @@ def build_synthesizer_user_prompt(
     structured_facts = extract_structured_facts(step_outputs)
     verification_summary = build_verification_summary(step_outputs)
 
+    # Resumen compacto del plan (solo tipo + nombre de tool) para reducir tokens
+    plan_summary = [
+        {"type": s.get("type"), "tool": s.get("tool") or s.get("name")}
+        for s in (plan.get("steps") or [])
+        if s.get("type") == "tool"
+    ]
+
     payload = {
         "goal": goal,
         "agent_name": agent_name,
         "agent_profile": agent_profile,
         "executed_tool_names": executed_tool_names,
-        "plan_steps": plan.get("steps", []),
+        "plan_tools": plan_summary,
         "tool_facts": tool_facts,
         "structured_facts": structured_facts,
         "verification_summary": verification_summary,
@@ -1364,7 +1391,6 @@ def build_synthesizer_user_prompt(
             payload["session_context"] = prev
 
     if gis_layers_catalog:
-        # Resumen compacto del catálogo para orientar la generación de SQL
         catalog_summary = [
             {
                 "name": layer.get("name"),
@@ -1411,11 +1437,16 @@ def synthesize_run(
         gis_layers_catalog=gis_layers_catalog,
         map_context=map_context,
     )
+    from django.conf import settings as dj_settings
+    synthesizer_timeout = float(
+        getattr(dj_settings, "AGENTS_SYNTHESIZER_TIMEOUT_SECONDS", 120.0)
+    )
     system_prompt = SYNTHESIZER_SYSTEM_PROMPT + SYNTHESIZER_SQL_ADDENDUM
     result = chat_completion_json(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         temperature=0.1,
+        timeout=synthesizer_timeout,
     )
     return {
         "final_text": str(result.get("final_text") or ""),
